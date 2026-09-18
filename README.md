@@ -19,6 +19,22 @@ uv run quant select -s ma_volume -n 20           # 选股（默认最新交易�
 uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17
 ```
 
+## 数据表
+
+- 行情：`daily`（日线）、`adj_factor`（复权因子）、`daily_basic`（每日指标，含 `limit_status` 涨跌停状态）、`suspend_d`（停牌）、`stk_limit`（涨跌停价）、`index_daily`（指数日线）
+- 参考：`stock_basic`（股票基础信息）、`trade_cal`（交易日历）、`namechange`（名称变更）
+- 新增：`stock_company`（上市公司基本信息）、`new_share`（IPO 新股列表）、`stk_holdertrade`（股东增减持，按公告日逐自然日抓取）
+
+### 升级/补数据
+
+```bash
+uv run quant data init-db                                  # 自动补新表/新列（幂等）
+uv run quant data update -t stock_company
+uv run quant data update -t new_share
+uv run quant data update -t stk_holdertrade --from-date 2015-01-01   # 约 30-45 分钟，可断点续跑
+uv run quant data update -t daily_basic --from-date 1990-01-01       # 补 limit_status 历史
+```
+
 ## 策略参数
 
 - `configs/strategies/<策略名>.yaml`：策略参数（CLI 会自动读取同名文件）
