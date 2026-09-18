@@ -33,6 +33,10 @@ HOLDERTRADE_FIELDS = ("ts_code,ann_date,holder_name,holder_type,in_de,"
                       "change_vol,change_ratio,after_share,after_ratio,"
                       "avg_price,total_share,begin_date,close_date")
 
+API_RATE_LIMITS: dict[str, int] = {
+    "stk_holdertrade": 90,  # 接口上限 100/分钟，留余量
+}
+
 
 class RateLimiter:
     """简单间隔限流：保证两次调用之间至少间隔 60/per_minute 秒。"""
@@ -58,11 +62,24 @@ class TushareClient:
     """Tushare 封装：限流、指数退避重试、常用接口快捷方法。"""
 
     def __init__(self, token: str | None = None, calls_per_minute: int = 150,
-                 max_retries: int = 3, pro: Any | None = None):
+                 max_retries: int = 3, pro: Any | None = None,
+                 api_rate_limits: dict[str, int] | None = None):
         self._token = token or get_settings().tushare_token
-        self._limiter = RateLimiter(calls_per_minute)
+        self._api_rate_limits = {**API_RATE_LIMITS, **(api_rate_limits or {})}
+        self._limiters: dict[str, RateLimiter] = {}
+        self._default_limiter = RateLimiter(calls_per_minute)
         self._max_retries = max_retries
         self._pro = pro
+
+    def _limiter_for(self, api_name: str) -> RateLimiter:
+        per_minute = self._api_rate_limits.get(api_name)
+        if per_minute is None:
+            return self._default_limiter
+        limiter = self._limiters.get(api_name)
+        if limiter is None:
+            limiter = RateLimiter(per_minute)
+            self._limiters[api_name] = limiter
+        return limiter
 
     @property
     def pro(self):
@@ -75,7 +92,7 @@ class TushareClient:
     def call(self, api_name: str, **kwargs) -> pd.DataFrame:
         last_err: Exception | None = None
         for attempt in range(self._max_retries):
-            self._limiter.acquire()
+            self._limiter_for(api_name).acquire()
             try:
                 return self.pro.query(api_name, **kwargs)
             except Exception as exc:  # noqa: BLE001 - 需要重试所有接口异常

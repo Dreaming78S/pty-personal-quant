@@ -228,3 +228,49 @@ def test_fetch_new_share_handles_column_less_empty_frames():
     df = client.fetch_new_share()
 
     assert df.empty
+
+
+def test_call_uses_90_per_minute_limiter_for_stk_holdertrade():
+    class FakePro:
+        def query(self, api, **kwargs):
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    client.call("stk_holdertrade", trade_date="20240102")
+
+    assert client._limiter_for("stk_holdertrade")._interval == pytest.approx(
+        60 / 90, abs=1e-6)
+    assert client._limiter_for("daily")._interval == pytest.approx(
+        60 / 150, abs=1e-6)
+
+
+def test_call_acquires_the_limiter_for_its_api(monkeypatch):
+    acquired = []
+    monkeypatch.setattr(RateLimiter, "acquire",
+                        lambda self: acquired.append(self))
+
+    class FakePro:
+        def query(self, api, **kwargs):
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    client.call("stk_holdertrade", trade_date="20240102")
+
+    assert acquired == [client._limiter_for("stk_holdertrade")]
+
+
+def test_api_rate_limits_override_only_named_api():
+    class FakePro:
+        def query(self, api, **kwargs):
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro(),
+                           api_rate_limits={"daily": 30})
+    client.call("daily", trade_date="20240102")
+
+    assert client._limiter_for("daily")._interval == pytest.approx(
+        60 / 30, abs=1e-6)
+    assert client._limiter_for("daily_basic")._interval == pytest.approx(
+        60 / 150, abs=1e-6)
+    assert client._limiter_for("stk_holdertrade")._interval == pytest.approx(
+        60 / 90, abs=1e-6)
