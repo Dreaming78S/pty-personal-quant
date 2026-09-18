@@ -13,17 +13,19 @@ from quant.data.tushare_client import (
 class FakeClient:
     def __init__(self, fail_on_date=None, stock_basic_df=None,
                  holdertrade_df=None, stock_company_df=None, new_share_df=None,
-                 frames_by_date=None):
+                 namechange_df=None, frames_by_date=None):
         self.calls = []
         self.fail_on_date = fail_on_date
         self.stock_basic_df = stock_basic_df
         self.holdertrade_df = holdertrade_df
         self.stock_company_df = stock_company_df
         self.new_share_df = new_share_df
+        self.namechange_df = namechange_df
         self.frames_by_date = frames_by_date or {}
         self.stock_basic_calls = 0
         self.stock_company_calls = 0
         self.new_share_calls = 0
+        self.namechange_calls = 0
 
     def _frame(self, trade_date="20240102"):
         return pd.DataFrame({"ts_code": ["000001.SZ"],
@@ -67,6 +69,12 @@ class FakeClient:
         self.new_share_calls += 1
         if self.new_share_df is not None:
             return self.new_share_df
+        return self._frame()
+
+    def fetch_namechange(self):
+        self.namechange_calls += 1
+        if self.namechange_df is not None:
+            return self.namechange_df
         return self._frame()
 
 
@@ -320,6 +328,19 @@ def test_new_share_full_refresh_uses_dedicated_fetcher(monkeypatch):
     assert client.new_share_calls == 1
     assert client.calls == []
     assert state["watermarks"] == [("new_share", "20240105")]
+    assert n == 1
+
+
+def test_namechange_full_refresh_uses_dedicated_fetcher(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "latest_trade_date", lambda: "20240105")
+    client = FakeClient()
+
+    n = ingest.update("namechange", client=client)
+
+    assert client.namechange_calls == 1
+    assert client.calls == []
+    assert state["watermarks"] == [("namechange", "20240105")]
     assert n == 1
 
 

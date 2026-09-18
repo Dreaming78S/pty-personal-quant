@@ -118,7 +118,6 @@ def test_fetch_helpers_pass_kwargs_and_fields():
     client.fetch_suspend_d("20240102")
     client.fetch_stk_limit("20240102")
     client.fetch_index_daily("000300.SH", "20240102")
-    client.fetch_namechange()
     client.fetch_trade_cal("20240101", "20240131")
 
     assert calls[0] == ("daily", {"trade_date": "20240102", "fields": DAILY_FIELDS})
@@ -133,8 +132,7 @@ def test_fetch_helpers_pass_kwargs_and_fields():
     assert calls[5] == ("index_daily", {"ts_code": "000300.SH",
                                        "trade_date": "20240102",
                                        "fields": INDEX_DAILY_FIELDS})
-    assert calls[6] == ("namechange", {"fields": NAMECHANGE_FIELDS})
-    assert calls[7] == ("trade_cal", {"exchange": "SSE", "start_date": "20240101",
+    assert calls[6] == ("trade_cal", {"exchange": "SSE", "start_date": "20240101",
                                       "end_date": "20240131",
                                       "fields": TRADE_CAL_FIELDS})
 
@@ -195,6 +193,49 @@ def test_fetch_new_share_loops_years_and_dedupes():
     assert list(df.index) == [0]
 
 
+def test_fetch_namechange_loops_years_and_dedupes_on_ts_code_start_date():
+    calls = []
+
+    class FakePro:
+        def query(self, api, **kwargs):
+            calls.append((api, kwargs))
+            year = kwargs.get("start_date", "")[:4]
+            if year == "1991":
+                return pd.DataFrame({"ts_code": ["000001.SZ"],
+                                     "name": ["深发展A"],
+                                     "start_date": ["19910403"]})
+            if year == "1992":
+                return pd.DataFrame({"ts_code": ["000001.SZ"],
+                                     "name": ["深发展"],
+                                     "start_date": ["19910403"]})
+            if year == "1993":
+                return pd.DataFrame({"ts_code": ["000001.SZ"],
+                                     "name": ["平安银行"],
+                                     "start_date": ["19930701"]})
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    df = client.fetch_namechange()
+
+    assert len(calls) >= 30
+    assert {api for api, _ in calls} == {"namechange"}
+    years = []
+    for _, kwargs in calls:
+        start, end = kwargs["start_date"], kwargs["end_date"]
+        assert start.endswith("0101") and end.endswith("1231")
+        assert start[:4] == end[:4]
+        assert kwargs["fields"] == NAMECHANGE_FIELDS
+        years.append(int(start[:4]))
+    assert years[0] == 1990
+    assert years == list(range(1990, datetime.date.today().year + 1))
+    # 同一 (ts_code, start_date) 保留后出现的年份（keep="last"），
+    # 不同 start_date 的历史曾用名全部保留
+    assert list(df["start_date"]) == ["19910403", "19930701"]
+    assert list(df["ts_code"]) == ["000001.SZ", "000001.SZ"]
+    overridden = df[df["start_date"] == "19910403"].iloc[0]
+    assert overridden["name"] == "深发展"
+
+
 FIELDS_BY_TABLE = {
     "daily": DAILY_FIELDS,
     "adj_factor": ADJ_FACTOR_FIELDS,
@@ -241,6 +282,16 @@ def test_fetch_new_share_raises_when_all_years_are_empty():
     client = TushareClient(token="t", pro=FakePro())
     with pytest.raises(RuntimeError, match="new_share"):
         client.fetch_new_share()
+
+
+def test_fetch_namechange_raises_when_all_years_are_empty():
+    class FakePro:
+        def query(self, api, **kwargs):
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    with pytest.raises(RuntimeError, match="namechange"):
+        client.fetch_namechange()
 
 
 def test_call_uses_90_per_minute_limiter_for_stk_holdertrade():

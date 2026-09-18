@@ -141,7 +141,20 @@ class TushareClient:
                          fields=TRADE_CAL_FIELDS)
 
     def fetch_namechange(self) -> pd.DataFrame:
-        return self.call("namechange", fields=NAMECHANGE_FIELDS)
+        frames = [
+            self.call("namechange", start_date=f"{year}0101",
+                      end_date=f"{year}1231", fields=NAMECHANGE_FIELDS)
+            for year in range(1990, datetime.date.today().year + 1)
+        ]
+        df = pd.concat(frames, ignore_index=True)
+        if df.empty:
+            raise RuntimeError(
+                "namechange 全部年份返回空数据，疑似限流或接口异常；"
+                "已中止，请稍后重跑")
+        # 一只股票有多个历史曾用名，主键为 (ts_code, start_date)，
+        # 不能按 ts_code 去重
+        df = df.drop_duplicates(subset=["ts_code", "start_date"], keep="last")
+        return df.reset_index(drop=True)
 
     def fetch_stock_company(self) -> pd.DataFrame:
         frames = []

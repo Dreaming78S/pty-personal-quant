@@ -146,6 +146,8 @@ def update(table: str, from_date: str | None = None, to_date: str | None = None,
                              fields=spec.fields)
         elif table == "stock_basic":
             df = client.fetch_stock_basic()
+        elif table == "namechange":
+            df = client.fetch_namechange()
         elif table == "stock_company":
             df = client.fetch_stock_company()
         elif table == "new_share":
