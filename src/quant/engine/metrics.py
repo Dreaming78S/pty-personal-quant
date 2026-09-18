@@ -39,7 +39,7 @@ def trade_stats(trades: pd.DataFrame) -> dict[str, float]:
     lots: dict[str, list[list[float]]] = {}
     wins = 0
     closed = 0
-    for _, trade in trades.sort_values("trade_date").iterrows():
+    for _, trade in trades.sort_values("trade_date", kind="stable").iterrows():
         code = trade["ts_code"]
         if trade["side"] == "buy":
             lots.setdefault(code, []).append(
@@ -50,10 +50,14 @@ def trade_stats(trades: pd.DataFrame) -> dict[str, float]:
         cost = 0.0
         while remaining > 0 and lots.get(code):
             lot = lots[code][0]
+            if lot[1] <= 0:
+                lots[code].pop(0)
+                continue
             used = min(lot[1], remaining)
             ratio = used / lot[1]
             cost += (lot[0] * lot[1] + lot[2]) * ratio
             lot[1] -= used
+            lot[2] *= 1.0 - ratio
             remaining -= used
             if lot[1] <= 0:
                 lots[code].pop(0)
@@ -88,7 +92,8 @@ def compute_metrics(equity: pd.DataFrame, trades: pd.DataFrame | None = None,
     result["月胜率"] = float((monthly_return > 0).mean()) if len(monthly_return) else 0.0
 
     if "benchmark" in equity.columns and equity["benchmark"].notna().any():
-        bench = equity["benchmark"].astype(float).ffill()
+        bench = (equity["benchmark"].astype(float).ffill()
+                 .reset_index(drop=True))
         bench_norm = bench / bench.dropna().iloc[0]
         equity_norm = series / series.iloc[0]
         result["基准收益"] = float(bench_norm.iloc[-1] - 1.0)
