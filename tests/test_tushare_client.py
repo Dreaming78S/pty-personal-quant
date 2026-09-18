@@ -69,38 +69,56 @@ def test_call_raises_after_max_retries(monkeypatch):
         client.call("daily", trade_date="20240102")
 
 
-def test_fetch_stock_basic_requests_all_statuses_and_dedupes():
+def test_fetch_stock_basic_requests_exchange_status_matrix_and_dedupes():
     calls = []
 
     class FakePro:
         def query(self, api, **kwargs):
             calls.append((api, kwargs))
-            if kwargs["list_status"] == "L":
-                return pd.DataFrame({"ts_code": ["000001.SZ", "600001.SH"],
+            key = (kwargs["exchange"], kwargs["list_status"])
+            if key == ("SSE", "L"):
+                return pd.DataFrame({"ts_code": ["600001.SH", "600002.SH"],
                                      "list_status": ["L", "L"],
                                      "delist_date": [None, None]})
-            if kwargs["list_status"] == "D":
-                return pd.DataFrame({"ts_code": ["000001.SZ"],
+            if key == ("SSE", "D"):
+                return pd.DataFrame({"ts_code": ["600002.SH"],
                                      "list_status": ["D"],
                                      "delist_date": ["20200101"]})
-            return pd.DataFrame({"ts_code": ["600002.SH"],
-                                 "list_status": ["P"],
-                                 "delist_date": [None]})
+            if key == ("SZSE", "L"):
+                return pd.DataFrame({"ts_code": ["000001.SZ"],
+                                     "list_status": ["L"],
+                                     "delist_date": [None]})
+            if key == ("BSE", "P"):
+                return pd.DataFrame({"ts_code": ["600003.SH"],
+                                     "list_status": ["P"],
+                                     "delist_date": [None]})
+            return pd.DataFrame()
 
     client = TushareClient(token="t", pro=FakePro())
     df = client.fetch_stock_basic()
 
-    common = {"exchange": "", "fields": STOCK_BASIC_FIELDS}
     assert calls == [
-        ("stock_basic", {**common, "list_status": "L"}),
-        ("stock_basic", {**common, "list_status": "D"}),
-        ("stock_basic", {**common, "list_status": "P"}),
+        ("stock_basic", {"exchange": exchange, "list_status": status,
+                         "fields": STOCK_BASIC_FIELDS})
+        for exchange in ("SSE", "SZSE", "BSE")
+        for status in ("L", "D", "P")
     ]
-    assert list(df["ts_code"]) == ["600001.SH", "000001.SZ", "600002.SH"]
-    assert list(df.index) == [0, 1, 2]
-    deduped = df[df["ts_code"] == "000001.SZ"].iloc[0]
+    assert list(df["ts_code"]) == ["600001.SH", "600002.SH", "000001.SZ",
+                                   "600003.SH"]
+    assert list(df.index) == [0, 1, 2, 3]
+    deduped = df[df["ts_code"] == "600002.SH"].iloc[0]
     assert deduped["list_status"] == "D"
     assert deduped["delist_date"] == "20200101"
+
+
+def test_fetch_stock_basic_raises_when_all_frames_empty():
+    class FakePro:
+        def query(self, api, **kwargs):
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    with pytest.raises(RuntimeError, match="stock_basic"):
+        client.fetch_stock_basic()
 
 
 def test_fetch_helpers_pass_kwargs_and_fields():
@@ -304,6 +322,21 @@ def test_call_uses_90_per_minute_limiter_for_stk_holdertrade():
 
     assert client._limiter_for("stk_holdertrade")._interval == pytest.approx(
         60 / 90, abs=1e-6)
+    assert client._limiter_for("daily")._interval == pytest.approx(
+        60 / 150, abs=1e-6)
+
+
+def test_call_uses_45_per_minute_limiter_for_stock_basic():
+    class FakePro:
+        def query(self, api, **kwargs):
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    client.call("stock_basic", exchange="SSE", list_status="L",
+                fields=STOCK_BASIC_FIELDS)
+
+    assert client._limiter_for("stock_basic")._interval == pytest.approx(
+        60 / 45, abs=1e-6)
     assert client._limiter_for("daily")._interval == pytest.approx(
         60 / 150, abs=1e-6)
 

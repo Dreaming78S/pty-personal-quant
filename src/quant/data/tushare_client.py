@@ -35,6 +35,7 @@ HOLDERTRADE_FIELDS = ("ts_code,ann_date,holder_name,holder_type,in_de,"
 
 API_RATE_LIMITS: dict[str, int] = {
     "stk_holdertrade": 90,  # 接口上限 100/分钟，留余量
+    "stock_basic": 45,  # 接口上限 50/分钟，留余量
 }
 
 
@@ -124,14 +125,20 @@ class TushareClient:
                          fields=INDEX_DAILY_FIELDS)
 
     def fetch_stock_basic(self) -> pd.DataFrame:
-        # list_status="" 等价默认 L，且默认字段不含 list_status/delist_date，
-        # 需按状态分别请求并显式指定 fields，否则退市股缺失、字段全为空
+        # 默认字段不含 list_status/delist_date（默认不显示），必须显式指定
+        # fields，否则退市股缺失、字段全为空；同时单次最多返回 6000 行，
+        # 故按交易所×上市状态拆分请求，避免股票数量增长后被静默截断
         frames = [
-            self.call("stock_basic", exchange="", list_status=status,
+            self.call("stock_basic", exchange=exchange, list_status=status,
                       fields=STOCK_BASIC_FIELDS)
+            for exchange in ("SSE", "SZSE", "BSE")
             for status in ("L", "D", "P")
         ]
         df = pd.concat(frames, ignore_index=True)
+        if df.empty:
+            raise RuntimeError(
+                "stock_basic 所有交易所×状态均返回空数据，疑似限流或接口异常；"
+                "已中止，请稍后重跑")
         df = df.drop_duplicates(subset="ts_code", keep="last")
         return df.reset_index(drop=True)
 
