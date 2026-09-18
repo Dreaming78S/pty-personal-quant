@@ -51,18 +51,44 @@ def test_call_raises_after_max_retries(monkeypatch):
         client.call("daily", trade_date="20240102")
 
 
-def test_fetch_stock_basic_requests_all_statuses():
+STOCK_BASIC_FIELDS = (
+    "ts_code,symbol,name,area,industry,market,exchange,"
+    "list_status,list_date,delist_date,is_hs,cnspell"
+)
+
+
+def test_fetch_stock_basic_requests_all_statuses_and_dedupes():
     calls = []
 
     class FakePro:
         def query(self, api, **kwargs):
             calls.append((api, kwargs))
-            return pd.DataFrame()
+            if kwargs["list_status"] == "L":
+                return pd.DataFrame({"ts_code": ["000001.SZ", "600001.SH"],
+                                     "list_status": ["L", "L"],
+                                     "delist_date": [None, None]})
+            if kwargs["list_status"] == "D":
+                return pd.DataFrame({"ts_code": ["000001.SZ"],
+                                     "list_status": ["D"],
+                                     "delist_date": ["20200101"]})
+            return pd.DataFrame({"ts_code": ["600002.SH"],
+                                 "list_status": ["P"],
+                                 "delist_date": [None]})
 
     client = TushareClient(token="t", pro=FakePro())
-    client.fetch_stock_basic()
+    df = client.fetch_stock_basic()
 
-    assert calls == [("stock_basic", {"exchange": "", "list_status": ""})]
+    common = {"exchange": "", "fields": STOCK_BASIC_FIELDS}
+    assert calls == [
+        ("stock_basic", {**common, "list_status": "L"}),
+        ("stock_basic", {**common, "list_status": "D"}),
+        ("stock_basic", {**common, "list_status": "P"}),
+    ]
+    assert list(df["ts_code"]) == ["600001.SH", "000001.SZ", "600002.SH"]
+    assert list(df.index) == [0, 1, 2]
+    deduped = df[df["ts_code"] == "000001.SZ"].iloc[0]
+    assert deduped["list_status"] == "D"
+    assert deduped["delist_date"] == "20200101"
 
 
 def test_fetch_helpers_pass_kwargs():

@@ -76,8 +76,17 @@ class TushareClient:
         return self.call("index_daily", ts_code=ts_code, trade_date=trade_date)
 
     def fetch_stock_basic(self) -> pd.DataFrame:
-        # 空字符串返回 L/D/P 全部状态，退市股也要有 list_date 供次新过滤使用
-        return self.call("stock_basic", exchange="", list_status="")
+        # list_status="" 等价默认 L，且默认字段不含 list_status/delist_date，
+        # 需按状态分别请求并显式指定 fields，否则退市股缺失、字段全为空
+        fields = ("ts_code,symbol,name,area,industry,market,exchange,"
+                  "list_status,list_date,delist_date,is_hs,cnspell")
+        frames = [
+            self.call("stock_basic", exchange="", list_status=status, fields=fields)
+            for status in ("L", "D", "P")
+        ]
+        df = pd.concat(frames, ignore_index=True)
+        df = df.drop_duplicates(subset="ts_code", keep="last")
+        return df.reset_index(drop=True)
 
     def fetch_trade_cal(self, start_date: str, end_date: str) -> pd.DataFrame:
         return self.call("trade_cal", exchange="SSE",

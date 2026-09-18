@@ -93,6 +93,8 @@ def update(table: str, from_date: str | None = None, to_date: str | None = None,
         if table == "trade_cal":
             df = client.call(spec.api, exchange="SSE",
                              start_date="19900101", end_date="20301231")
+        elif table == "stock_basic":
+            df = client.fetch_stock_basic()
         else:
             df = client.call(spec.api)
         prepared = _prepare(df, table)
