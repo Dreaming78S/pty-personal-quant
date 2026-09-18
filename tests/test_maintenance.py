@@ -41,6 +41,35 @@ def test_truncate_tables_executes_one_truncate_per_table(monkeypatch):
     assert executed == [f"TRUNCATE TABLE `{name}`" for name in schemas.TABLES]
 
 
+def test_truncate_tables_with_explicit_names(monkeypatch):
+    executed = []
+    monkeypatch.setattr(maintenance.db, "execute",
+                        lambda sql: executed.append(sql))
+    monkeypatch.setattr(maintenance.db, "read_df",
+                        lambda sql, params=None: pytest.fail(
+                            "显式指定表清单时不应查询 information_schema"))
+
+    names = maintenance.truncate_tables(["daily", "ingest_log"])
+
+    assert names == ["daily", "ingest_log"]
+    assert executed == ["TRUNCATE TABLE `daily`", "TRUNCATE TABLE `ingest_log`"]
+
+
+def test_truncate_tables_all_tables_uses_information_schema(monkeypatch):
+    executed = []
+    monkeypatch.setattr(maintenance.db, "execute",
+                        lambda sql: executed.append(sql))
+    monkeypatch.setattr(maintenance.db, "read_df",
+                        lambda sql, params=None: pd.DataFrame(
+                            {"TABLE_NAME": ["legacy_notes", "trade_cal"]}))
+
+    names = maintenance.truncate_tables(all_tables=True)
+
+    assert names == ["legacy_notes", "trade_cal"]
+    assert executed == ["TRUNCATE TABLE `legacy_notes`",
+                        "TRUNCATE TABLE `trade_cal`"]
+
+
 def _patch_update(monkeypatch, failing=()):
     calls = []
 
@@ -80,6 +109,30 @@ def test_rebuild_holdertrade_start_defaults_to_market_start(monkeypatch):
     assert dict(calls)["stk_holdertrade"] == "20180101"
 
 
+def test_rebuild_resume_uses_watermarks_for_date_tables(monkeypatch):
+    calls = _patch_update(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark",
+                        lambda table: "20240105" if table == "daily" else None)
+
+    maintenance.rebuild(market_start="20180101", resume=True)
+
+    dates = dict(calls)
+    assert dates["daily"] is None
+    assert dates["adj_factor"] == "20180101"
+    assert dates["stk_holdertrade"] == "20180101"
+    for table in ingest.FULL_REFRESH_ORDER:
+        assert dates[table] is None
+
+
+def test_rebuild_without_resume_ignores_watermarks(monkeypatch):
+    calls = _patch_update(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: "20240105")
+
+    maintenance.rebuild(market_start="20180101")
+
+    assert dict(calls)["daily"] == "20180101"
+
+
 def test_rebuild_normalizes_iso_dates(monkeypatch):
     calls = _patch_update(monkeypatch)
 
@@ -113,7 +166,10 @@ def test_rebuild_continues_on_error_and_records_failure(monkeypatch):
 
 
 def test_rebuild_reraises_when_continue_on_error_false(monkeypatch):
-    _patch_update(monkeypatch, failing=("daily",))
+    calls = _patch_update(monkeypatch, failing=("daily",))
 
     with pytest.raises(RuntimeError, match="daily boom"):
         maintenance.rebuild(market_start="20180101", continue_on_error=False)
+
+    assert calls[-1][0] == "daily"
+    assert len(calls) == len(ingest.FULL_REFRESH_ORDER) + 1

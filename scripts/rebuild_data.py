@@ -14,7 +14,9 @@
 安全提示：
 - 不加 --yes 时会列出将被清空的表并要求输入 YES 确认；
 - --all-tables 会清空当前数据库中的全部基础表（含非本系统表），请谨慎使用；
-- 中断后可用 --skip-truncate 跳过清空，从水位线续跑补齐。
+- 日期参数、--rate 与 Tushare 客户端均在清空之前校验/构造，参数写错不会清库；
+- 中断后可用 --skip-truncate 跳过清空，行情/增减持表按 ingest_log 水位线
+  断点续跑（没有水位线的表从起始日期拉取），快照表仍整体刷新。
 """
 from __future__ import annotations
 
@@ -25,6 +27,7 @@ import time
 from quant import maintenance
 from quant.data import db, schemas
 from quant.data.tushare_client import TushareClient
+from quant.utils.dates import to_yyyymmdd
 from quant.utils.logging import setup_logging
 
 
@@ -78,9 +81,23 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     setup_logging()
 
-    tables = maintenance.tables_to_truncate(all_tables=args.all_tables)
-    if not args.skip_truncate and not args.yes:
-        if not confirm(tables, args.all_tables):
+    try:
+        market_start = to_yyyymmdd(args.market_start)
+        holdertrade_start = (to_yyyymmdd(args.holdertrade_start)
+                             if args.holdertrade_start else None)
+    except ValueError as exc:
+        print(f"参数错误：{exc}")
+        return 2
+    if args.rate < 1:
+        print("参数错误：--rate 必须为不小于 1 的整数")
+        return 2
+
+    client = TushareClient(calls_per_minute=args.rate)
+
+    names: list[str] = []
+    if not args.skip_truncate:
+        names = maintenance.tables_to_truncate(all_tables=args.all_tables)
+        if not args.yes and not confirm(names, args.all_tables):
             print("已取消，未做任何修改。")
             return 0
 
@@ -88,12 +105,12 @@ def main(argv: list[str] | None = None) -> int:
     schemas.create_all()
     schemas.migrate()
     if not args.skip_truncate:
-        maintenance.truncate_tables(all_tables=args.all_tables)
+        maintenance.truncate_tables(names)
 
-    client = TushareClient(calls_per_minute=args.rate)
-    results = maintenance.rebuild(market_start=args.market_start,
-                                  holdertrade_start=args.holdertrade_start,
-                                  client=client)
+    results = maintenance.rebuild(market_start=market_start,
+                                  holdertrade_start=holdertrade_start,
+                                  client=client,
+                                  resume=args.skip_truncate)
     print_summary(results, time.monotonic() - started)
     return 1 if any(isinstance(value, str) for value in results.values()) else 0
 

@@ -22,14 +22,19 @@ def tables_to_truncate(all_tables: bool = False) -> list[str]:
     return list(schemas.TABLES)
 
 
-def truncate_tables(all_tables: bool = False) -> list[str]:
-    """清空各表数据（保留表结构），并重置 ingest_log 水位线。返回被清空的表名。"""
-    names = tables_to_truncate(all_tables)
-    for name in names:
+def truncate_tables(names: list[str] | None = None,
+                    all_tables: bool = False) -> list[str]:
+    """清空指定表的数据（保留表结构）；names 缺省时按 all_tables 规则选取。
+
+    返回实际清空的表名列表，便于调用方确认清空范围。
+    """
+    targets = (list(names) if names is not None
+               else tables_to_truncate(all_tables))
+    for name in targets:
         logger.info("清空表 %s ...", name)
         db.execute(f"TRUNCATE TABLE `{name}`")
-    logger.info("已清空 %d 张表：%s", len(names), ", ".join(names))
-    return names
+    logger.info("已清空 %d 张表：%s", len(targets), ", ".join(targets))
+    return targets
 
 
 def _rebuild_table(table: str, from_date: str | None, client: TushareClient | None,
@@ -54,10 +59,14 @@ def _rebuild_table(table: str, from_date: str | None, client: TushareClient | No
 
 def rebuild(market_start: str = "20180101", holdertrade_start: str | None = None,
             client: TushareClient | None = None,
-            continue_on_error: bool = True) -> dict[str, int | str]:
-    """清空后的全量重建：先刷快照表，再按日期区间重拉行情与股东增减持。
+            continue_on_error: bool = True,
+            resume: bool = False) -> dict[str, int | str]:
+    """全量重建：先刷快照表，再按日期区间重拉行情与股东增减持。
 
-    每张表独立计时并记录日志；continue_on_error=True 时单表异常记为
+    resume=True 时（配合 --skip-truncate 使用）行情/增减持表按 ingest_log
+    水位线断点续跑：有水位线的表传 from_date=None 交给 ingest.update 从水位线
+    继续；没有水位线的表从 market_start/holdertrade_start 拉取；快照表始终
+    整体刷新。每张表独立计时并记录日志；continue_on_error=True 时单表异常记为
     ``失败: ...`` 并继续，False 时直接抛出。
     """
     market_start = to_yyyymmdd(market_start)
@@ -69,8 +78,9 @@ def rebuild(market_start: str = "20180101", holdertrade_start: str | None = None
     for table in ingest.SPECS:
         if table in ingest.FULL_REFRESH_ORDER:
             continue
-        from_date = (holdertrade_start if table == "stk_holdertrade"
-                     else market_start)
+        start = (holdertrade_start if table == "stk_holdertrade"
+                 else market_start)
+        from_date = None if resume and ingest.get_watermark(table) else start
         results[table] = _rebuild_table(table, from_date, client,
                                         continue_on_error)
     return results
