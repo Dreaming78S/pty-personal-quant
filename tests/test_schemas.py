@@ -1,3 +1,5 @@
+import pytest
+
 from quant.data import schemas
 
 
@@ -33,3 +35,37 @@ def test_create_all_calls_execute(monkeypatch):
     assert set(names) == set(schemas.TABLES)
     assert len(calls) == len(schemas.TABLES)
     assert all("CREATE TABLE IF NOT EXISTS" in sql for sql in calls)
+
+
+ALL_TABLE_NAMES = list(schemas.TABLES)
+PER_DATE_TABLE_NAMES = [name for name, spec in schemas.TABLES.items()
+                        if spec.date_column == "trade_date"]
+DECIMAL_TABLE_NAMES = ["daily", "adj_factor", "daily_basic", "stk_limit",
+                       "index_daily"]
+
+
+@pytest.mark.parametrize("table", ALL_TABLE_NAMES)
+def test_table_engine_and_charset(table):
+    ddl = schemas.TABLES[table].ddl
+    assert "ENGINE=InnoDB" in ddl
+    assert "DEFAULT CHARSET=utf8mb4" in ddl
+
+
+@pytest.mark.parametrize("table", ALL_TABLE_NAMES)
+def test_table_has_primary_key(table):
+    assert "PRIMARY KEY (" in schemas.TABLES[table].ddl
+
+
+@pytest.mark.parametrize("table", PER_DATE_TABLE_NAMES)
+def test_per_date_table_indexes_trade_date(table):
+    assert "KEY idx_trade_date (trade_date)" in schemas.TABLES[table].ddl
+
+
+@pytest.mark.parametrize("table", DECIMAL_TABLE_NAMES)
+def test_numeric_market_columns_use_decimal(table):
+    assert "DECIMAL" in schemas.TABLES[table].ddl
+
+
+@pytest.mark.parametrize("table", ["daily", "index_daily"])
+def test_change_column_is_backticked(table):
+    assert "`change`" in schemas.TABLES[table].ddl
