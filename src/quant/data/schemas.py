@@ -261,7 +261,7 @@ CREATE TABLE IF NOT EXISTS new_share (
 CREATE TABLE IF NOT EXISTS stk_holdertrade (
   ts_code VARCHAR(12) NOT NULL COMMENT 'TS代码',
   ann_date CHAR(8) NOT NULL COMMENT '公告日期',
-  holder_name VARCHAR(128) NOT NULL COMMENT '股东名称',
+  holder_name VARCHAR(255) NOT NULL COMMENT '股东名称',
   holder_type CHAR(2) COMMENT '股东类型G高管P个人C公司',
   in_de CHAR(2) NOT NULL COMMENT '增减持类型IN增持DE减持',
   change_vol DECIMAL(20,4) NOT NULL COMMENT '变动数量(万股)',
@@ -313,9 +313,24 @@ MIGRATIONS: list[tuple[str, str, str]] = [
      "ALTER TABLE `daily_basic` ADD COLUMN `limit_status` INT NULL COMMENT '收盘涨跌状态：0平盘,1涨,2涨停,3一字涨停,4跌,5跌停,6一字跌停' AFTER `circ_mv`"),
 ]
 
+WIDENINGS: list[tuple[str, str, int, str]] = [
+    ("stk_holdertrade", "holder_name", 255,
+     "ALTER TABLE `stk_holdertrade` MODIFY COLUMN `holder_name` VARCHAR(255) NOT NULL COMMENT '股东名称'"),
+]
+
+
+def _column_length(df) -> int | None:
+    if df.empty or "CHARACTER_MAXIMUM_LENGTH" not in df.columns:
+        return None
+    value = df.iloc[0]["CHARACTER_MAXIMUM_LENGTH"]
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
 
 def migrate() -> list[str]:
-    """对已存在的表补齐缺失列（只加列，幂等）。返回实际执行的 <表>.<列> 列表。"""
+    """对已存在的表补齐缺失列并加宽过窄的列（幂等）。返回实际执行的 <表>.<列> 列表。"""
     applied = []
     for table, column, sql in MIGRATIONS:
         df = db.read_df(
@@ -324,6 +339,17 @@ def migrate() -> list[str]:
             (table, column),
         )
         if not df.empty:
+            continue
+        db.execute(sql)
+        applied.append(f"{table}.{column}")
+    for table, column, min_length, sql in WIDENINGS:
+        df = db.read_df(
+            "SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s",
+            (table, column),
+        )
+        current = _column_length(df)
+        if current is None or current >= min_length:
             continue
         db.execute(sql)
         applied.append(f"{table}.{column}")

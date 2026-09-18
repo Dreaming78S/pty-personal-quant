@@ -95,6 +95,76 @@ def test_daily_basic_limit_status_column_after_circ_mv():
     assert "limit_status INT NULL" in ddl
 
 
+def test_stk_holdertrade_holder_name_widened_to_255():
+    spec = schemas.TABLES["stk_holdertrade"]
+    assert "holder_name VARCHAR(255) NOT NULL COMMENT '股东名称'" in spec.ddl
+    assert spec.columns == (
+        "ts_code", "ann_date", "holder_name", "holder_type", "in_de",
+        "change_vol", "change_ratio", "after_share", "after_ratio",
+        "avg_price", "total_share", "begin_date", "close_date",
+    )
+    assert ("PRIMARY KEY (ts_code, ann_date, holder_name, in_de, change_vol)"
+            in spec.ddl)
+
+
+def _read_df_with_holder_name_length(length, column_absent=False):
+    def read_df(sql, params=None):
+        if "CHARACTER_MAXIMUM_LENGTH" in sql:
+            assert "TABLE_SCHEMA = DATABASE()" in sql
+            assert params == ("stk_holdertrade", "holder_name")
+            if column_absent:
+                return pd.DataFrame()
+            return pd.DataFrame({"CHARACTER_MAXIMUM_LENGTH": [length]})
+        return pd.DataFrame({"COLUMN_NAME": ["limit_status"]})
+    return read_df
+
+
+def test_migrate_widens_narrow_holder_name(monkeypatch):
+    executed = []
+    monkeypatch.setattr(schemas.db, "read_df",
+                        _read_df_with_holder_name_length(128))
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == ["stk_holdertrade.holder_name"]
+    assert len(executed) == 1
+    assert "MODIFY COLUMN `holder_name` VARCHAR(255) NOT NULL" in executed[0]
+
+
+def test_migrate_skips_widening_when_already_255(monkeypatch):
+    executed = []
+    monkeypatch.setattr(schemas.db, "read_df",
+                        _read_df_with_holder_name_length(255))
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == []
+    assert executed == []
+
+
+def test_migrate_skips_widening_when_length_is_null(monkeypatch):
+    executed = []
+    monkeypatch.setattr(schemas.db, "read_df",
+                        _read_df_with_holder_name_length(None))
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == []
+    assert executed == []
+
+
+def test_migrate_skips_widening_when_column_absent(monkeypatch):
+    executed = []
+    monkeypatch.setattr(schemas.db, "read_df",
+                        _read_df_with_holder_name_length(None,
+                                                         column_absent=True))
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == []
+    assert executed == []
+
+
 def test_migrate_skips_existing_column(monkeypatch):
     executed = []
     monkeypatch.setattr(
