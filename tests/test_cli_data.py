@@ -33,3 +33,25 @@ def test_data_status_prints_table_rows(monkeypatch):
     result = runner.invoke(app, ["data", "status"])
     assert result.exit_code == 0
     assert "daily" in result.output
+
+
+def test_data_status_reports_missing_table(monkeypatch):
+    def fake_scalar(sql, params=None):
+        if sql.strip() == "SELECT 1":
+            return 1
+        raise RuntimeError("表不存在")
+
+    monkeypatch.setattr("quant.data.db.scalar", fake_scalar)
+    result = runner.invoke(app, ["data", "status"])
+    assert result.exit_code == 0
+    assert "表不存在" in result.output
+
+
+def test_data_status_reports_db_down(monkeypatch):
+    def fake_scalar(sql, params=None):
+        raise RuntimeError("connection refused")
+
+    monkeypatch.setattr("quant.data.db.scalar", fake_scalar)
+    result = runner.invoke(app, ["data", "status"])
+    assert result.exit_code == 1
+    assert "数据库连接失败" in result.output

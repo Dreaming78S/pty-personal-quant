@@ -43,6 +43,12 @@ def data_status() -> None:
 
     from quant.data import cache, db, schemas
 
+    try:
+        db.scalar("SELECT 1")
+    except Exception as exc:  # noqa: BLE001 - 连接失败时给出明确提示
+        typer.echo(f"数据库连接失败：{exc}")
+        raise typer.Exit(code=1)
+
     rows = []
     for name in schemas.TABLES:
         try:
@@ -52,9 +58,12 @@ def data_status() -> None:
         if name == "ingest_log":
             watermark = "-"
         else:
-            watermark = db.scalar(
-                "SELECT last_trade_date FROM ingest_log WHERE task_name=%s", (name,)
-            ) or "-"
+            try:
+                watermark = db.scalar(
+                    "SELECT last_trade_date FROM ingest_log WHERE task_name=%s", (name,)
+                ) or "-"
+            except Exception:  # noqa: BLE001 - 水位线表缺失时留空
+                watermark = "-"
         rows.append({
             "表": name,
             "行数": count,
