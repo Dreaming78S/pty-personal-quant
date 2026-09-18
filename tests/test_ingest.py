@@ -6,6 +6,7 @@ from quant.data.tushare_client import (
     DAILY_FIELDS,
     HOLDERTRADE_FIELDS,
     INDEX_DAILY_FIELDS,
+    TRADE_CAL_FIELDS,
 )
 
 
@@ -36,7 +37,9 @@ class FakeClient:
 
     def call(self, api, **kwargs):
         self.calls.append((api, kwargs))
-        if self.fail_on_date and kwargs.get("trade_date") == self.fail_on_date:
+        if self.fail_on_date and (
+                kwargs.get("trade_date") == self.fail_on_date
+                or kwargs.get("ann_date") == self.fail_on_date):
             raise RuntimeError("mock failure")
         if api == "stk_holdertrade":
             if self.holdertrade_df is not None:
@@ -304,3 +307,61 @@ def test_update_all_refreshes_company_and_ipo_snapshots(monkeypatch):
     assert list(results).index("stock_company") < list(results).index("daily")
     assert client.stock_company_calls == 1
     assert client.new_share_calls == 1
+
+
+def test_trade_cal_full_refresh_passes_fields(monkeypatch):
+    _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "latest_trade_date", lambda: "20240105")
+    client = FakeClient()
+
+    ingest.update("trade_cal", client=client)
+
+    assert client.calls == [("trade_cal", {
+        "exchange": "SSE", "start_date": "19900101", "end_date": "20301231",
+        "fields": TRADE_CAL_FIELDS})]
+
+
+def test_by_calendar_day_raises_on_column_less_response(monkeypatch):
+    _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
+    monkeypatch.setattr(ingest, "calendar_days_between",
+                        lambda start, end: ["20240102"])
+    client = FakeClient(holdertrade_df=pd.DataFrame())
+
+    with pytest.raises(RuntimeError, match="change_vol"):
+        ingest.update("stk_holdertrade", to_date="20240102", client=client)
+
+
+def test_by_calendar_day_skips_upsert_when_all_rows_dropped(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
+    monkeypatch.setattr(ingest, "calendar_days_between",
+                        lambda start, end: ["20240102"])
+    client = FakeClient(holdertrade_df=pd.DataFrame({
+        "ts_code": ["000001.SZ"],
+        "ann_date": ["20240102"],
+        "holder_name": ["甲"],
+        "in_de": ["DE"],
+        "change_vol": [None],
+    }))
+
+    n = ingest.update("stk_holdertrade", to_date="20240102", client=client)
+
+    assert state["upserts"] == []
+    assert n == 0
+    assert state["watermarks"] == [("stk_holdertrade", "20240102")]
+
+
+def test_by_calendar_day_watermark_not_advanced_for_failed_batch(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "BATCH_DATES", 2)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
+    monkeypatch.setattr(ingest, "calendar_days_between",
+                        lambda start, end: ["20240101", "20240102",
+                                            "20240103", "20240104"])
+    client = FakeClient(fail_on_date="20240103")
+
+    with pytest.raises(RuntimeError):
+        ingest.update("stk_holdertrade", to_date="20240104", client=client)
+
+    assert state["watermarks"] == [("stk_holdertrade", "20240102")]

@@ -195,21 +195,6 @@ def test_fetch_new_share_loops_years_and_dedupes():
     assert list(df.index) == [0]
 
 
-def test_fetch_stk_holdertrade_passes_ann_date_and_fields():
-    calls = []
-
-    class FakePro:
-        def query(self, api, **kwargs):
-            calls.append((api, kwargs))
-            return pd.DataFrame()
-
-    client = TushareClient(token="t", pro=FakePro())
-    client.fetch_stk_holdertrade("20240102")
-
-    assert calls == [("stk_holdertrade", {"ann_date": "20240102",
-                                          "fields": HOLDERTRADE_FIELDS})]
-
-
 FIELDS_BY_TABLE = {
     "daily_basic": DAILY_BASIC_FIELDS,
     "stock_company": STOCK_COMPANY_FIELDS,

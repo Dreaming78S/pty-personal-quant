@@ -134,7 +134,8 @@ def update(table: str, from_date: str | None = None, to_date: str | None = None,
     if spec.mode == "full":
         if table == "trade_cal":
             df = client.call(spec.api, exchange="SSE",
-                             start_date="19900101", end_date="20301231")
+                             start_date="19900101", end_date="20301231",
+                             fields=spec.fields)
         elif table == "stock_basic":
             df = client.fetch_stock_basic()
         elif table == "stock_company":
@@ -170,6 +171,10 @@ def update(table: str, from_date: str | None = None, to_date: str | None = None,
             frames = []
             for d in batch:
                 df = _prepare(_fetch_by_calendar_day(client, spec, d), table)
+                if "change_vol" not in df.columns:
+                    raise RuntimeError(
+                        f"{table} 在 {d} 返回了不含 change_vol 的空响应"
+                        "（疑似限流或服务异常），已中止；请稍后重跑，程序将从水位线继续")
                 df = df.dropna(subset=["change_vol"])
                 if not df.empty:
                     frames.append(df)

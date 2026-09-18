@@ -147,7 +147,3 @@ class TushareClient:
         if not df.empty:
             df = df.drop_duplicates(subset="ts_code", keep="last")
         return df.reset_index(drop=True)
-
-    def fetch_stk_holdertrade(self, ann_date: str) -> pd.DataFrame:
-        return self.call("stk_holdertrade", ann_date=ann_date,
-                         fields=HOLDERTRADE_FIELDS)
