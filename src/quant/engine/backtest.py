@@ -71,6 +71,9 @@ def filters_from_config(config: BacktestConfig) -> UniverseFilters:
 def run_backtest(strategy: Strategy, config: BacktestConfig,
                  market: pd.DataFrame | None = None,
                  benchmark: pd.Series | None = None) -> BacktestResult:
+    if config.execution not in ("next_open", "next_close"):
+        raise ValueError(f"不支持的执行方式：{config.execution}")
+
     filters = filters_from_config(config)
     warmup = max(config.warmup_days, strategy.warmup_days)
     if market is None:
@@ -98,17 +101,27 @@ def run_backtest(strategy: Strategy, config: BacktestConfig,
         for d, group in market[eligible].groupby("trade_date")
     }
 
+    if config.execution == "next_open":
+        price_col, raw_col = "open", "raw_open"
+    else:
+        price_col, raw_col = "close", "raw_close"
+
     info = market.set_index(["trade_date", "ts_code"])[
-        ["open", "raw_open", "up_limit", "down_limit", "suspended"]]
+        ["open", "close", "raw_open", "raw_close",
+         "up_limit", "down_limit", "suspended"]]
     close = market.pivot_table(index="trade_date", columns="ts_code",
                                values="close", aggfunc="last")
     close = close.reindex(all_dates).ffill()
 
     if benchmark is not None and not benchmark.empty:
-        bench = benchmark.reindex(all_dates).ffill()
-        bench_norm = bench / bench.dropna().iloc[0] * config.initial_cash
+        bench = benchmark.reindex(all_dates).ffill().reindex(dates)
+        valid = bench.dropna()
+        if valid.empty:
+            bench_norm = pd.Series(float("nan"), index=dates)
+        else:
+            bench_norm = bench / valid.iloc[0] * config.initial_cash
     else:
-        bench_norm = pd.Series(float("nan"), index=all_dates)
+        bench_norm = pd.Series(float("nan"), index=dates)
 
     rebal = set(rebalance_dates(dates, config.rebalance))
     cash = config.initial_cash
@@ -134,9 +147,9 @@ def run_backtest(strategy: Strategy, config: BacktestConfig,
         row = info.loc[(date, code)] if (date, code) in info.index else None
         if row is None or bool(row["suspended"]):
             return False
-        if rules.blocked_sell(row["raw_open"], row["down_limit"]):
+        if rules.blocked_sell(row[raw_col], row["down_limit"]):
             return False
-        price = rules.apply_slippage(row["open"], "sell", config.fees.slippage)
+        price = rules.apply_slippage(row[price_col], "sell", config.fees.slippage)
         amount = price * position.shares
         fee = rules.sell_fee(amount, config.fees)
         cash += amount - fee
@@ -149,9 +162,9 @@ def run_backtest(strategy: Strategy, config: BacktestConfig,
         row = info.loc[(date, code)] if (date, code) in info.index else None
         if row is None or bool(row["suspended"]):
             return
-        if rules.blocked_buy(row["raw_open"], row["up_limit"]):
+        if rules.blocked_buy(row[raw_col], row["up_limit"]):
             return
-        price = rules.apply_slippage(row["open"], "buy", config.fees.slippage)
+        price = rules.apply_slippage(row[price_col], "buy", config.fees.slippage)
         if price <= 0:
             return
         desired = rules.round_lot(int(target_amount // price), code)
@@ -193,15 +206,16 @@ def run_backtest(strategy: Strategy, config: BacktestConfig,
                 try_buy(date, code, target_amount)
 
     for index, date in enumerate(all_dates):
-        if date in dates:
-            process_sell_queue(date)
-            if pending is not None:
-                execute_pending(date)
-                pending = None
-            if date in rebal and index + 1 < len(all_dates):
-                ranked = signal_by_date.get(date, [])
-                allowed = eligible_by_date.get(date, set())
-                pending = [code for code in ranked if code in allowed][:config.top_n]
+        if date not in dates:
+            continue
+        process_sell_queue(date)
+        if pending is not None:
+            execute_pending(date)
+            pending = None
+        if date in rebal and index + 1 < len(all_dates):
+            ranked = signal_by_date.get(date, [])
+            allowed = eligible_by_date.get(date, set())
+            pending = [code for code in ranked if code in allowed][:config.top_n]
 
         equity = cash + sum(
             position.shares * float(close.loc[date, position.ts_code])

@@ -100,3 +100,76 @@ def test_universe_excludes_st_and_new():
     result2 = backtest.run_backtest(
         AlwaysStrategy(), base_config(min_list_days=60), market=market2)
     assert result2.trades.empty
+
+
+def test_execution_next_close_buys_at_execution_close():
+    market = make_market(up_limit=13.0, down_limit=8.0)
+    market["close"] = 12.0
+    market["raw_close"] = 12.0
+    result = backtest.run_backtest(
+        AlwaysStrategy(), base_config(execution="next_close"), market=market)
+    first_trade = result.trades.iloc[0]
+    assert first_trade["trade_date"] == "20240102"
+    assert first_trade["price"] == pytest.approx(12.0)
+    assert first_trade["shares"] == 8300
+
+
+def test_next_close_limit_check_uses_raw_close():
+    market = make_market(up_limit=13.0, down_limit=8.0)
+    market["close"] = 12.0
+    market["raw_close"] = 12.0
+    market.loc[market["trade_date"] == "20240102", "up_limit"] = 11.0  # 开盘 10 未涨停、收盘 12 涨停
+    result = backtest.run_backtest(
+        AlwaysStrategy(), base_config(execution="next_close"), market=market)
+    assert result.trades.iloc[0]["trade_date"] == "20240103"
+
+
+def test_unknown_execution_rejected():
+    market = make_market()
+    with pytest.raises(ValueError, match="不支持的执行方式"):
+        backtest.run_backtest(AlwaysStrategy(),
+                              base_config(execution="same_close"),
+                              market=market)
+
+
+def test_sell_retried_on_non_rebalance_date():
+    market = make_market(dates=("20240101", "20240102", "20240103", "20240104",
+                                "20240105", "20240108", "20240109", "20240110"))
+    market.loc[market["trade_date"] == "20240109", "down_limit"] = 10.0
+    result = backtest.run_backtest(
+        FirstDayStrategy(), base_config(rebalance="weekly", end="20240110"),
+        market=market)
+    sells = result.trades[result.trades["side"] == "sell"]
+    assert len(sells) == 1
+    assert sells.iloc[0]["trade_date"] == "20240110"
+    assert "20240110" not in backtest.rebalance_dates(
+        market["trade_date"].unique().tolist(), "weekly")
+
+
+def test_benchmark_normalization_and_absence():
+    market = make_market()
+    bench = pd.Series([3000.0, 3300.0], index=["20240101", "20240102"])
+    result = backtest.run_backtest(AlwaysStrategy(), base_config(),
+                                   market=market, benchmark=bench)
+    bench_col = result.equity["benchmark"]
+    assert bench_col.iloc[0] == pytest.approx(100_000.0)
+    assert bench_col.iloc[1] == pytest.approx(110_000.0)
+    assert bench_col.iloc[-1] == pytest.approx(110_000.0)
+
+    absent = backtest.run_backtest(AlwaysStrategy(), base_config(), market=market)
+    assert absent.equity["benchmark"].isna().all()
+
+    no_overlap = pd.Series([1000.0, 1010.0], index=["20230101", "20230102"])
+    stale = backtest.run_backtest(AlwaysStrategy(), base_config(), market=market,
+                                  benchmark=no_overlap)
+    assert stale.equity["benchmark"].isna().all()
+
+
+def test_equity_excludes_warmup_dates():
+    market = make_market(dates=("20231229", "20240101", "20240102", "20240103",
+                                "20240104", "20240105", "20240108"))
+    result = backtest.run_backtest(AlwaysStrategy(), base_config(), market=market)
+    assert result.equity["trade_date"].min() == "20240101"
+    assert result.equity["trade_date"].tolist() == [
+        "20240101", "20240102", "20240103", "20240104", "20240105", "20240108"]
+    assert result.trades["trade_date"].min() >= "20240101"
