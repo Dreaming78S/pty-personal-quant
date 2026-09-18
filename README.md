@@ -37,6 +37,21 @@ uv run quant data update -t daily_basic --from-date 2020-01-01       # 补 limit
 
 中断后断点续跑：直接重跑 `uv run quant data update -t stk_holdertrade`（不带 `--from-date`，程序从水位线继续）。
 
+## 夜间全量重建
+
+长时间增量更新后若出现数据空洞，或接口/字段变更需要彻底重刷，可在夜间（非交易时段）执行：
+
+```bash
+uv run python scripts/rebuild_data.py --yes              # 无值守执行，约 2 小时
+uv run python scripts/rebuild_data.py                    # 列出待清空表并输入 YES 确认
+uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，从水位线续跑补齐
+```
+
+- 默认清空 `schemas.TABLES` 全部系统表的数据（含 `ingest_log` 水位线）后全量重拉，行情/交易类数据从 2018-01-01 起（`--market-start` 可调）
+- 不传 `--yes` 时会列出将被清空的表并要求输入 `YES` 确认；`--all-tables` 会清空当前库全部基础表（含非本系统表），请谨慎使用
+- 预计耗时约 2 小时（行情约 1.2 万次调用、150 次/分钟；股东增减持按自然日抓取、90 次/分钟）；中断后直接重跑或加 `--skip-truncate`
+- 全量数据需预留数 GB MySQL 存储空间，请确认实例容量后再执行
+
 ## 策略参数
 
 - `configs/strategies/<策略名>.yaml`：策略参数（CLI 会自动读取同名文件）
