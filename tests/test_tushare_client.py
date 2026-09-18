@@ -1,7 +1,24 @@
+import datetime
+
 import pandas as pd
 import pytest
 
-from quant.data.tushare_client import RateLimiter, TushareClient
+from quant.data.tushare_client import (
+    ADJ_FACTOR_FIELDS,
+    DAILY_BASIC_FIELDS,
+    DAILY_FIELDS,
+    HOLDERTRADE_FIELDS,
+    INDEX_DAILY_FIELDS,
+    NAMECHANGE_FIELDS,
+    NEW_SHARE_FIELDS,
+    STK_LIMIT_FIELDS,
+    STOCK_BASIC_FIELDS,
+    STOCK_COMPANY_FIELDS,
+    SUSPEND_FIELDS,
+    TRADE_CAL_FIELDS,
+    RateLimiter,
+    TushareClient,
+)
 
 
 def test_rate_limiter_first_call_no_sleep_then_waits():
@@ -51,12 +68,6 @@ def test_call_raises_after_max_retries(monkeypatch):
         client.call("daily", trade_date="20240102")
 
 
-STOCK_BASIC_FIELDS = (
-    "ts_code,symbol,name,area,industry,market,exchange,"
-    "list_status,list_date,delist_date,is_hs,cnspell"
-)
-
-
 def test_fetch_stock_basic_requests_all_statuses_and_dedupes():
     calls = []
 
@@ -91,7 +102,7 @@ def test_fetch_stock_basic_requests_all_statuses_and_dedupes():
     assert deduped["delist_date"] == "20200101"
 
 
-def test_fetch_helpers_pass_kwargs():
+def test_fetch_helpers_pass_kwargs_and_fields():
     calls = []
 
     class FakePro:
@@ -101,9 +112,98 @@ def test_fetch_helpers_pass_kwargs():
 
     client = TushareClient(token="t", pro=FakePro())
     client.fetch_daily("20240102")
+    client.fetch_adj_factor("20240102")
+    client.fetch_daily_basic("20240102")
+    client.fetch_suspend_d("20240102")
+    client.fetch_stk_limit("20240102")
     client.fetch_index_daily("000300.SH", "20240102")
+    client.fetch_namechange()
     client.fetch_trade_cal("20240101", "20240131")
 
-    assert calls[0] == ("daily", {"trade_date": "20240102"})
-    assert calls[1] == ("index_daily", {"ts_code": "000300.SH", "trade_date": "20240102"})
-    assert calls[2] == ("trade_cal", {"exchange": "SSE", "start_date": "20240101", "end_date": "20240131"})
+    assert calls[0] == ("daily", {"trade_date": "20240102", "fields": DAILY_FIELDS})
+    assert calls[1] == ("adj_factor",
+                        {"trade_date": "20240102", "fields": ADJ_FACTOR_FIELDS})
+    assert calls[2] == ("daily_basic",
+                        {"trade_date": "20240102", "fields": DAILY_BASIC_FIELDS})
+    assert calls[3] == ("suspend_d",
+                        {"trade_date": "20240102", "fields": SUSPEND_FIELDS})
+    assert calls[4] == ("stk_limit",
+                        {"trade_date": "20240102", "fields": STK_LIMIT_FIELDS})
+    assert calls[5] == ("index_daily", {"ts_code": "000300.SH",
+                                       "trade_date": "20240102",
+                                       "fields": INDEX_DAILY_FIELDS})
+    assert calls[6] == ("namechange", {"fields": NAMECHANGE_FIELDS})
+    assert calls[7] == ("trade_cal", {"exchange": "SSE", "start_date": "20240101",
+                                      "end_date": "20240131",
+                                      "fields": TRADE_CAL_FIELDS})
+
+
+def test_fetch_stock_company_queries_three_exchanges_and_dedupes():
+    calls = []
+
+    class FakePro:
+        def query(self, api, **kwargs):
+            calls.append((api, kwargs))
+            if kwargs["exchange"] == "SSE":
+                return pd.DataFrame({"ts_code": ["600000.SH", "600001.SH"],
+                                     "exchange": ["SSE", "SSE"]})
+            if kwargs["exchange"] == "SZSE":
+                return pd.DataFrame({"ts_code": ["000001.SZ"],
+                                     "exchange": ["SZSE"]})
+            return pd.DataFrame({"ts_code": ["600000.SH"], "exchange": ["BSE"]})
+
+    client = TushareClient(token="t", pro=FakePro())
+    df = client.fetch_stock_company()
+
+    assert calls == [
+        ("stock_company", {"exchange": "SSE", "fields": STOCK_COMPANY_FIELDS}),
+        ("stock_company", {"exchange": "SZSE", "fields": STOCK_COMPANY_FIELDS}),
+        ("stock_company", {"exchange": "BSE", "fields": STOCK_COMPANY_FIELDS}),
+    ]
+    assert list(df["ts_code"]) == ["600001.SH", "000001.SZ", "600000.SH"]
+    assert list(df.index) == [0, 1, 2]
+    deduped = df[df["ts_code"] == "600000.SH"].iloc[0]
+    assert deduped["exchange"] == "BSE"
+
+
+def test_fetch_new_share_loops_years_and_dedupes():
+    calls = []
+
+    class FakePro:
+        def query(self, api, **kwargs):
+            calls.append((api, kwargs))
+            year = kwargs["start_date"][:4]
+            return pd.DataFrame({"ts_code": ["300001.SZ"],
+                                 "ipo_date": [f"{year}0101"]})
+
+    client = TushareClient(token="t", pro=FakePro())
+    df = client.fetch_new_share()
+
+    assert len(calls) >= 30
+    assert {api for api, _ in calls} == {"new_share"}
+    years = []
+    for _, kwargs in calls:
+        start, end = kwargs["start_date"], kwargs["end_date"]
+        assert start.endswith("0101") and end.endswith("1231")
+        assert start[:4] == end[:4]
+        assert kwargs["fields"] == NEW_SHARE_FIELDS
+        years.append(int(start[:4]))
+    assert years[0] == 1990
+    assert years == list(range(1990, datetime.date.today().year + 1))
+    assert list(df["ts_code"]) == ["300001.SZ"]
+    assert list(df.index) == [0]
+
+
+def test_fetch_stk_holdertrade_passes_ann_date_and_fields():
+    calls = []
+
+    class FakePro:
+        def query(self, api, **kwargs):
+            calls.append((api, kwargs))
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    client.fetch_stk_holdertrade("20240102")
+
+    assert calls == [("stk_holdertrade", {"ann_date": "20240102",
+                                          "fields": HOLDERTRADE_FIELDS})]

@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS adj_factor (
         columns=("ts_code", "trade_date", "turnover_rate", "turnover_rate_f",
                  "volume_ratio", "pe", "pe_ttm", "pb", "ps", "ps_ttm",
                  "dv_ratio", "dv_ttm", "total_share", "float_share",
-                 "free_share", "total_mv", "circ_mv"),
+                 "free_share", "total_mv", "circ_mv", "limit_status"),
         ddl="""
 CREATE TABLE IF NOT EXISTS daily_basic (
   ts_code VARCHAR(12) NOT NULL COMMENT 'TS代码',
@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS daily_basic (
   free_share DECIMAL(20,4) COMMENT '自由流通股本(万股)',
   total_mv DECIMAL(20,4) COMMENT '总市值(万元)',
   circ_mv DECIMAL(20,4) COMMENT '流通市值(万元)',
+  limit_status INT NULL COMMENT '收盘涨跌状态：0平盘,1涨,2涨停,3一字涨停,4跌,5跌停,6一字跌停',
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (ts_code, trade_date),
   KEY idx_trade_date (trade_date)
@@ -193,6 +194,90 @@ CREATE TABLE IF NOT EXISTS namechange (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='股票名称变更'
 """,
     ),
+    "stock_company": TableSpec(
+        name="stock_company",
+        columns=("ts_code", "com_name", "com_id", "exchange", "chairman",
+                 "manager", "secretary", "reg_capital", "setup_date",
+                 "province", "city", "introduction", "website", "email",
+                 "office", "employees", "main_business", "business_scope"),
+        date_column=None,
+        ddl="""
+CREATE TABLE IF NOT EXISTS stock_company (
+  ts_code VARCHAR(12) NOT NULL COMMENT 'TS代码',
+  com_name VARCHAR(64) COMMENT '公司名称',
+  com_id VARCHAR(32) COMMENT '统一社会信用代码',
+  exchange VARCHAR(8) COMMENT '交易所',
+  chairman VARCHAR(64) COMMENT '董事长',
+  manager VARCHAR(64) COMMENT '总经理',
+  secretary VARCHAR(64) COMMENT '董秘',
+  reg_capital DECIMAL(20,4) COMMENT '注册资本(万元)',
+  setup_date CHAR(8) COMMENT '注册日期',
+  province VARCHAR(32) COMMENT '省份',
+  city VARCHAR(32) COMMENT '城市',
+  introduction MEDIUMTEXT COMMENT '公司介绍',
+  website VARCHAR(128) COMMENT '公司主页',
+  email VARCHAR(128) COMMENT '电子邮件',
+  office VARCHAR(128) COMMENT '办公室',
+  employees INT COMMENT '员工人数',
+  main_business MEDIUMTEXT COMMENT '主要业务及产品',
+  business_scope MEDIUMTEXT COMMENT '经营范围',
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (ts_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='上市公司基本信息'
+""",
+    ),
+    "new_share": TableSpec(
+        name="new_share",
+        columns=("ts_code", "sub_code", "name", "ipo_date", "issue_date",
+                 "amount", "market_amount", "price", "pe", "limit_amount",
+                 "funds", "ballot"),
+        date_column=None,
+        ddl="""
+CREATE TABLE IF NOT EXISTS new_share (
+  ts_code VARCHAR(12) NOT NULL COMMENT 'TS代码',
+  sub_code VARCHAR(10) COMMENT '申购代码',
+  name VARCHAR(32) COMMENT '股票名称',
+  ipo_date CHAR(8) COMMENT '上网发行日期',
+  issue_date CHAR(8) COMMENT '上市日期',
+  amount DECIMAL(20,4) COMMENT '发行总量(万股)',
+  market_amount DECIMAL(20,4) COMMENT '上网发行总量(万股)',
+  price DECIMAL(12,4) COMMENT '发行价格',
+  pe DECIMAL(16,6) COMMENT '发行市盈率',
+  limit_amount DECIMAL(20,4) COMMENT '个人申购上限(万股)',
+  funds DECIMAL(20,4) COMMENT '募集资金(亿元)',
+  ballot DECIMAL(12,6) COMMENT '中签率',
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (ts_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='IPO新股列表'
+""",
+    ),
+    "stk_holdertrade": TableSpec(
+        name="stk_holdertrade",
+        columns=("ts_code", "ann_date", "holder_name", "holder_type", "in_de",
+                 "change_vol", "change_ratio", "after_share", "after_ratio",
+                 "avg_price", "total_share", "begin_date", "close_date"),
+        date_column=None,
+        ddl="""
+CREATE TABLE IF NOT EXISTS stk_holdertrade (
+  ts_code VARCHAR(12) NOT NULL COMMENT 'TS代码',
+  ann_date CHAR(8) NOT NULL COMMENT '公告日期',
+  holder_name VARCHAR(128) NOT NULL COMMENT '股东名称',
+  holder_type CHAR(2) COMMENT '股东类型G高管P个人C公司',
+  in_de CHAR(2) NOT NULL COMMENT '增减持类型IN增持DE减持',
+  change_vol DECIMAL(20,4) NOT NULL COMMENT '变动数量(万股)',
+  change_ratio DECIMAL(12,4) COMMENT '占流通比例%',
+  after_share DECIMAL(20,4) COMMENT '变动后持股(万股)',
+  after_ratio DECIMAL(12,4) COMMENT '变动后占流通比例%',
+  avg_price DECIMAL(12,4) COMMENT '平均价格',
+  total_share DECIMAL(20,4) COMMENT '持股总数(万股)',
+  begin_date CHAR(8) COMMENT '增减持开始日期',
+  close_date CHAR(8) COMMENT '增减持结束日期',
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (ts_code, ann_date, holder_name, in_de, change_vol),
+  KEY idx_ann_date (ann_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='股东增减持'
+""",
+    ),
     "ingest_log": TableSpec(
         name="ingest_log",
         columns=("task_name", "last_trade_date"),
@@ -221,3 +306,25 @@ def create_all() -> list[str]:
     for spec in TABLES.values():
         db.execute(spec.ddl)
     return list(TABLES)
+
+
+MIGRATIONS: list[tuple[str, str, str]] = [
+    ("daily_basic", "limit_status",
+     "ALTER TABLE `daily_basic` ADD COLUMN `limit_status` INT NULL COMMENT '收盘涨跌状态：0平盘,1涨,2涨停,3一字涨停,4跌,5跌停,6一字跌停' AFTER `circ_mv`"),
+]
+
+
+def migrate() -> list[str]:
+    """对已存在的表补齐缺失列（只加列，幂等）。返回实际执行的 <表>.<列> 列表。"""
+    applied = []
+    for table, column, sql in MIGRATIONS:
+        df = db.read_df(
+            "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+            "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s",
+            (table, column),
+        )
+        if not df.empty:
+            continue
+        db.execute(sql)
+        applied.append(f"{table}.{column}")
+    return applied

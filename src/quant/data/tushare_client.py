@@ -1,11 +1,37 @@
 from __future__ import annotations
 
+import datetime
 import time
 from typing import Any, Callable
 
 import pandas as pd
 
 from quant.config import get_settings
+
+STOCK_BASIC_FIELDS = ("ts_code,symbol,name,area,industry,market,exchange,"
+                      "list_status,list_date,delist_date,is_hs,cnspell")
+TRADE_CAL_FIELDS = "exchange,cal_date,is_open,pretrade_date"
+DAILY_FIELDS = ("ts_code,trade_date,open,high,low,close,pre_close,"
+                "change,pct_chg,vol,amount")
+ADJ_FACTOR_FIELDS = "ts_code,trade_date,adj_factor"
+DAILY_BASIC_FIELDS = ("ts_code,trade_date,turnover_rate,turnover_rate_f,"
+                      "volume_ratio,pe,pe_ttm,pb,ps,ps_ttm,dv_ratio,dv_ttm,"
+                      "total_share,float_share,free_share,total_mv,circ_mv,"
+                      "limit_status")
+SUSPEND_FIELDS = "ts_code,trade_date,suspend_timing,suspend_type"
+STK_LIMIT_FIELDS = "ts_code,trade_date,up_limit,down_limit"
+INDEX_DAILY_FIELDS = ("ts_code,trade_date,open,high,low,close,pre_close,"
+                      "change,pct_chg,vol,amount")
+NAMECHANGE_FIELDS = "ts_code,name,start_date,end_date,ann_date,change_reason"
+STOCK_COMPANY_FIELDS = ("ts_code,com_name,com_id,exchange,chairman,manager,"
+                        "secretary,reg_capital,setup_date,province,city,"
+                        "introduction,website,email,office,employees,"
+                        "main_business,business_scope")
+NEW_SHARE_FIELDS = ("ts_code,sub_code,name,ipo_date,issue_date,amount,"
+                    "market_amount,price,pe,limit_amount,funds,ballot")
+HOLDERTRADE_FIELDS = ("ts_code,ann_date,holder_name,holder_type,in_de,"
+                      "change_vol,change_ratio,after_share,after_ratio,"
+                      "avg_price,total_share,begin_date,close_date")
 
 
 class RateLimiter:
@@ -58,30 +84,34 @@ class TushareClient:
         raise RuntimeError(f"Tushare 接口 {api_name} 调用失败: {last_err}")
 
     def fetch_daily(self, trade_date: str) -> pd.DataFrame:
-        return self.call("daily", trade_date=trade_date)
+        return self.call("daily", trade_date=trade_date, fields=DAILY_FIELDS)
 
     def fetch_adj_factor(self, trade_date: str) -> pd.DataFrame:
-        return self.call("adj_factor", trade_date=trade_date)
+        return self.call("adj_factor", trade_date=trade_date,
+                         fields=ADJ_FACTOR_FIELDS)
 
     def fetch_daily_basic(self, trade_date: str) -> pd.DataFrame:
-        return self.call("daily_basic", trade_date=trade_date)
+        return self.call("daily_basic", trade_date=trade_date,
+                         fields=DAILY_BASIC_FIELDS)
 
     def fetch_suspend_d(self, trade_date: str) -> pd.DataFrame:
-        return self.call("suspend_d", trade_date=trade_date)
+        return self.call("suspend_d", trade_date=trade_date,
+                         fields=SUSPEND_FIELDS)
 
     def fetch_stk_limit(self, trade_date: str) -> pd.DataFrame:
-        return self.call("stk_limit", trade_date=trade_date)
+        return self.call("stk_limit", trade_date=trade_date,
+                         fields=STK_LIMIT_FIELDS)
 
     def fetch_index_daily(self, ts_code: str, trade_date: str) -> pd.DataFrame:
-        return self.call("index_daily", ts_code=ts_code, trade_date=trade_date)
+        return self.call("index_daily", ts_code=ts_code, trade_date=trade_date,
+                         fields=INDEX_DAILY_FIELDS)
 
     def fetch_stock_basic(self) -> pd.DataFrame:
         # list_status="" 等价默认 L，且默认字段不含 list_status/delist_date，
         # 需按状态分别请求并显式指定 fields，否则退市股缺失、字段全为空
-        fields = ("ts_code,symbol,name,area,industry,market,exchange,"
-                  "list_status,list_date,delist_date,is_hs,cnspell")
         frames = [
-            self.call("stock_basic", exchange="", list_status=status, fields=fields)
+            self.call("stock_basic", exchange="", list_status=status,
+                      fields=STOCK_BASIC_FIELDS)
             for status in ("L", "D", "P")
         ]
         df = pd.concat(frames, ignore_index=True)
@@ -90,7 +120,32 @@ class TushareClient:
 
     def fetch_trade_cal(self, start_date: str, end_date: str) -> pd.DataFrame:
         return self.call("trade_cal", exchange="SSE",
-                         start_date=start_date, end_date=end_date)
+                         start_date=start_date, end_date=end_date,
+                         fields=TRADE_CAL_FIELDS)
 
     def fetch_namechange(self) -> pd.DataFrame:
-        return self.call("namechange")
+        return self.call("namechange", fields=NAMECHANGE_FIELDS)
+
+    def fetch_stock_company(self) -> pd.DataFrame:
+        frames = [
+            self.call("stock_company", exchange=exchange,
+                      fields=STOCK_COMPANY_FIELDS)
+            for exchange in ("SSE", "SZSE", "BSE")
+        ]
+        df = pd.concat(frames, ignore_index=True)
+        df = df.drop_duplicates(subset="ts_code", keep="last")
+        return df.reset_index(drop=True)
+
+    def fetch_new_share(self) -> pd.DataFrame:
+        frames = [
+            self.call("new_share", start_date=f"{year}0101",
+                      end_date=f"{year}1231", fields=NEW_SHARE_FIELDS)
+            for year in range(1990, datetime.date.today().year + 1)
+        ]
+        df = pd.concat(frames, ignore_index=True)
+        df = df.drop_duplicates(subset="ts_code", keep="last")
+        return df.reset_index(drop=True)
+
+    def fetch_stk_holdertrade(self, ann_date: str) -> pd.DataFrame:
+        return self.call("stk_holdertrade", ann_date=ann_date,
+                         fields=HOLDERTRADE_FIELDS)

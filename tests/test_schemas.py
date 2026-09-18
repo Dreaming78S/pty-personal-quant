@@ -1,3 +1,4 @@
+import pandas as pd
 import pytest
 
 from quant.data import schemas
@@ -7,6 +8,7 @@ def test_all_expected_tables_exist():
     expected = {
         "stock_basic", "trade_cal", "daily", "adj_factor", "daily_basic",
         "suspend_d", "stk_limit", "index_daily", "namechange", "ingest_log",
+        "stock_company", "new_share", "stk_holdertrade",
     }
     assert set(schemas.TABLES) == expected
 
@@ -69,3 +71,50 @@ def test_numeric_market_columns_use_decimal(table):
 @pytest.mark.parametrize("table", ["daily", "index_daily"])
 def test_change_column_is_backticked(table):
     assert "`change`" in schemas.TABLES[table].ddl
+
+
+def test_new_reference_tables_use_no_date_column():
+    for table in ("stock_company", "new_share", "stk_holdertrade"):
+        assert schemas.date_column(table) is None
+
+
+def test_new_table_primary_keys():
+    assert "PRIMARY KEY (ts_code)" in schemas.TABLES["stock_company"].ddl
+    assert "PRIMARY KEY (ts_code)" in schemas.TABLES["new_share"].ddl
+    holder_ddl = schemas.TABLES["stk_holdertrade"].ddl
+    assert ("PRIMARY KEY (ts_code, ann_date, holder_name, in_de, change_vol)"
+            in holder_ddl)
+    assert "KEY idx_ann_date (ann_date)" in holder_ddl
+
+
+def test_daily_basic_limit_status_column_after_circ_mv():
+    cols = schemas.columns_of("daily_basic")
+    assert cols[cols.index("circ_mv") + 1] == "limit_status"
+    ddl = schemas.TABLES["daily_basic"].ddl
+    assert ddl.index("circ_mv") < ddl.index("limit_status") < ddl.index("updated_at")
+    assert "limit_status INT NULL" in ddl
+
+
+def test_migrate_skips_existing_column(monkeypatch):
+    executed = []
+    monkeypatch.setattr(
+        schemas.db, "read_df",
+        lambda sql, params=None: pd.DataFrame({"COLUMN_NAME": ["limit_status"]}))
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == []
+    assert executed == []
+
+
+def test_migrate_adds_missing_column(monkeypatch):
+    executed = []
+    monkeypatch.setattr(schemas.db, "read_df",
+                        lambda sql, params=None: pd.DataFrame())
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == ["daily_basic.limit_status"]
+    assert len(executed) == 1
+    assert "ADD COLUMN `limit_status`" in executed[0]
+    assert "AFTER `circ_mv`" in executed[0]
