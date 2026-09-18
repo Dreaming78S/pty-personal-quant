@@ -129,7 +129,7 @@ CREATE TABLE IF NOT EXISTS daily_basic (
 CREATE TABLE IF NOT EXISTS suspend_d (
   ts_code VARCHAR(12) NOT NULL COMMENT 'TS代码',
   trade_date CHAR(8) NOT NULL COMMENT '交易日期',
-  suspend_timing VARCHAR(16) COMMENT '日内停牌时段',
+  suspend_timing VARCHAR(255) COMMENT '日内停牌时段',
   suspend_type VARCHAR(8) COMMENT 'S停牌 R复牌',
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (ts_code, trade_date),
@@ -187,7 +187,7 @@ CREATE TABLE IF NOT EXISTS namechange (
   start_date CHAR(8) COMMENT '开始日期',
   end_date CHAR(8) COMMENT '结束日期',
   ann_date CHAR(8) COMMENT '公告日期',
-  change_reason VARCHAR(64) COMMENT '变更原因',
+  change_reason VARCHAR(255) COMMENT '变更原因',
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (ts_code, start_date),
   KEY idx_start_date (start_date)
@@ -316,6 +316,10 @@ MIGRATIONS: list[tuple[str, str, str]] = [
 WIDENINGS: list[tuple[str, str, int, str]] = [
     ("stk_holdertrade", "holder_name", 255,
      "ALTER TABLE `stk_holdertrade` MODIFY COLUMN `holder_name` VARCHAR(255) NOT NULL COMMENT '股东名称'"),
+    ("suspend_d", "suspend_timing", 255,
+     "ALTER TABLE `suspend_d` MODIFY COLUMN `suspend_timing` VARCHAR(255) COMMENT '日内停牌时段'"),
+    ("namechange", "change_reason", 255,
+     "ALTER TABLE `namechange` MODIFY COLUMN `change_reason` VARCHAR(255) COMMENT '变更原因'"),
 ]
 
 

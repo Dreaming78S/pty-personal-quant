@@ -107,45 +107,78 @@ def test_stk_holdertrade_holder_name_widened_to_255():
             in spec.ddl)
 
 
-def _read_df_with_holder_name_length(length, column_absent=False):
+def test_suspend_timing_widened_to_255():
+    assert ("suspend_timing VARCHAR(255) COMMENT '日内停牌时段'"
+            in schemas.TABLES["suspend_d"].ddl)
+
+
+def test_namechange_change_reason_widened_to_255():
+    assert ("change_reason VARCHAR(255) COMMENT '变更原因'"
+            in schemas.TABLES["namechange"].ddl)
+
+
+WIDENING_CASES = [
+    pytest.param(
+        "stk_holdertrade", "holder_name", 255,
+        "ALTER TABLE `stk_holdertrade` MODIFY COLUMN `holder_name` "
+        "VARCHAR(255) NOT NULL COMMENT '股东名称'",
+        id="holder_name",
+    ),
+    pytest.param(
+        "suspend_d", "suspend_timing", 255,
+        "ALTER TABLE `suspend_d` MODIFY COLUMN `suspend_timing` "
+        "VARCHAR(255) COMMENT '日内停牌时段'",
+        id="suspend_timing",
+    ),
+    pytest.param(
+        "namechange", "change_reason", 255,
+        "ALTER TABLE `namechange` MODIFY COLUMN `change_reason` "
+        "VARCHAR(255) COMMENT '变更原因'",
+        id="change_reason",
+    ),
+]
+
+
+def test_widenings_cover_all_expected_columns():
+    assert ([(table, column, min_length)
+             for table, column, min_length, _ in schemas.WIDENINGS]
+            == [("stk_holdertrade", "holder_name", 255),
+                ("suspend_d", "suspend_timing", 255),
+                ("namechange", "change_reason", 255)])
+
+
+def _read_df_for_widening(table, column, length, column_absent=False):
     def read_df(sql, params=None):
         if "CHARACTER_MAXIMUM_LENGTH" in sql:
             assert "TABLE_SCHEMA = DATABASE()" in sql
-            assert params == ("stk_holdertrade", "holder_name")
-            if column_absent:
-                return pd.DataFrame()
-            return pd.DataFrame({"CHARACTER_MAXIMUM_LENGTH": [length]})
+            if params == (table, column):
+                if column_absent:
+                    return pd.DataFrame()
+                return pd.DataFrame({"CHARACTER_MAXIMUM_LENGTH": [length]})
+            return pd.DataFrame({"CHARACTER_MAXIMUM_LENGTH": [255]})
         return pd.DataFrame({"COLUMN_NAME": ["limit_status"]})
     return read_df
 
 
-def test_migrate_widens_narrow_holder_name(monkeypatch):
+@pytest.mark.parametrize("table,column,min_length,expected_sql", WIDENING_CASES)
+def test_migrate_widens_narrow_column(monkeypatch, table, column, min_length,
+                                     expected_sql):
     executed = []
     monkeypatch.setattr(schemas.db, "read_df",
-                        _read_df_with_holder_name_length(128))
+                        _read_df_for_widening(table, column, min_length - 1))
     monkeypatch.setattr(schemas.db, "execute",
                         lambda sql, params=None: executed.append(sql))
 
-    assert schemas.migrate() == ["stk_holdertrade.holder_name"]
-    assert len(executed) == 1
-    assert "MODIFY COLUMN `holder_name` VARCHAR(255) NOT NULL" in executed[0]
+    assert schemas.migrate() == [f"{table}.{column}"]
+    assert executed == [expected_sql]
 
 
-def test_migrate_skips_widening_when_already_255(monkeypatch):
+@pytest.mark.parametrize("table,column,min_length,expected_sql", WIDENING_CASES)
+def test_migrate_skips_widening_when_already_widest(monkeypatch, table, column,
+                                                    min_length, expected_sql):
     executed = []
     monkeypatch.setattr(schemas.db, "read_df",
-                        _read_df_with_holder_name_length(255))
-    monkeypatch.setattr(schemas.db, "execute",
-                        lambda sql, params=None: executed.append(sql))
-
-    assert schemas.migrate() == []
-    assert executed == []
-
-
-def test_migrate_skips_widening_when_length_is_null(monkeypatch):
-    executed = []
-    monkeypatch.setattr(schemas.db, "read_df",
-                        _read_df_with_holder_name_length(None))
+                        _read_df_for_widening(table, column, min_length))
     monkeypatch.setattr(schemas.db, "execute",
                         lambda sql, params=None: executed.append(sql))
 
@@ -153,11 +186,26 @@ def test_migrate_skips_widening_when_length_is_null(monkeypatch):
     assert executed == []
 
 
-def test_migrate_skips_widening_when_column_absent(monkeypatch):
+@pytest.mark.parametrize("table,column,min_length,expected_sql", WIDENING_CASES)
+def test_migrate_skips_widening_when_length_is_null(monkeypatch, table, column,
+                                                    min_length, expected_sql):
     executed = []
     monkeypatch.setattr(schemas.db, "read_df",
-                        _read_df_with_holder_name_length(None,
-                                                         column_absent=True))
+                        _read_df_for_widening(table, column, None))
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == []
+    assert executed == []
+
+
+@pytest.mark.parametrize("table,column,min_length,expected_sql", WIDENING_CASES)
+def test_migrate_skips_widening_when_column_absent(monkeypatch, table, column,
+                                                   min_length, expected_sql):
+    executed = []
+    monkeypatch.setattr(schemas.db, "read_df",
+                        _read_df_for_widening(table, column, None,
+                                              column_absent=True))
     monkeypatch.setattr(schemas.db, "execute",
                         lambda sql, params=None: executed.append(sql))
 
@@ -219,8 +267,9 @@ def test_migrate_applies_add_then_widen_in_order(monkeypatch):
         if "information_schema.TABLES" in sql:
             return pd.DataFrame({"TABLE_NAME": [params[0]]})
         if "CHARACTER_MAXIMUM_LENGTH" in sql:
-            assert params == ("stk_holdertrade", "holder_name")
-            return pd.DataFrame({"CHARACTER_MAXIMUM_LENGTH": [128]})
+            if params == ("stk_holdertrade", "holder_name"):
+                return pd.DataFrame({"CHARACTER_MAXIMUM_LENGTH": [128]})
+            return pd.DataFrame({"CHARACTER_MAXIMUM_LENGTH": [255]})
         return pd.DataFrame()
 
     monkeypatch.setattr(schemas.db, "read_df", read_df)
