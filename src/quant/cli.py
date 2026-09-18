@@ -84,3 +84,37 @@ def list_strategies_cmd() -> None:
             f"{key}={spec.get('default', '?')}" for key, spec in schema.items()
         ) or "无参数"
         typer.echo(f"{name}: {params}")
+
+
+@app.command("select")
+def select(
+    strategy: str = typer.Option(..., "--strategy", "-s", help="策略名"),
+    date: str = typer.Option(None, "--date", "-d", help="交易日，缺省最新；非交易日自动回退"),
+    top: int = typer.Option(20, "--top", "-n", help="输出数量"),
+    rank_by: str = typer.Option("amount", "--rank-by", help="排序字段"),
+) -> None:
+    """按策略筛选个股并输出 CSV。"""
+    from pathlib import Path
+
+    from quant.data import cache
+    from quant.engine import loader, selection, report
+    from quant.strategies.base import get_strategy, load_strategy_config
+    from quant.utils.dates import to_yyyymmdd
+    from quant.utils.logging import setup_logging
+
+    setup_logging()
+    params: dict = {}
+    config_path = Path("configs/strategies") / f"{strategy}.yaml"
+    if config_path.exists():
+        _, params = load_strategy_config(config_path)
+    strat = get_strategy(strategy, **params)
+
+    cache.ensure_all()
+    target = loader.resolve_trade_date(to_yyyymmdd(date) if date else None)
+    market = loader.load_market_data(
+        start=target, end=target, warmup_days=strat.warmup_days)
+    result = selection.run_selection(strat, target, top_n=top, market=market,
+                                     rank_by=rank_by)
+    typer.echo(result.to_string(index=False))
+    path = report.save_selection(result, target, strategy)
+    typer.echo(f"已保存：{path}")
