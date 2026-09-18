@@ -12,13 +12,15 @@ from quant.data.tushare_client import (
 
 class FakeClient:
     def __init__(self, fail_on_date=None, stock_basic_df=None,
-                 holdertrade_df=None, stock_company_df=None, new_share_df=None):
+                 holdertrade_df=None, stock_company_df=None, new_share_df=None,
+                 frames_by_date=None):
         self.calls = []
         self.fail_on_date = fail_on_date
         self.stock_basic_df = stock_basic_df
         self.holdertrade_df = holdertrade_df
         self.stock_company_df = stock_company_df
         self.new_share_df = new_share_df
+        self.frames_by_date = frames_by_date or {}
         self.stock_basic_calls = 0
         self.stock_company_calls = 0
         self.new_share_calls = 0
@@ -45,6 +47,8 @@ class FakeClient:
             if self.holdertrade_df is not None:
                 return self.holdertrade_df.copy()
             return self._holdertrade_frame()
+        if kwargs.get("trade_date") in self.frames_by_date:
+            return self.frames_by_date[kwargs["trade_date"]].copy()
         return self._frame(kwargs.get("trade_date", "20240102"))
 
     def fetch_stock_basic(self):
@@ -133,6 +137,35 @@ def test_watermark_not_advanced_for_failed_batch(monkeypatch):
         ingest.update("daily", to_date="20240104", client=client)
 
     assert state["watermarks"] == [("daily", "20240102")]
+
+
+def test_by_date_raises_on_empty_frame_for_must_have_data(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "BATCH_DATES", 2)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
+    monkeypatch.setattr(ingest, "trade_dates_between",
+                        lambda start, end: ["20240101", "20240102", "20240103"])
+    client = FakeClient(frames_by_date={"20240103": pd.DataFrame()})
+
+    with pytest.raises(RuntimeError, match="daily 20240103 返回空数据"):
+        ingest.update("daily", to_date="20240103", client=client)
+
+    assert state["watermarks"] == [("daily", "20240102")]
+
+
+def test_by_date_skips_empty_frames_for_non_must_have_data(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
+    monkeypatch.setattr(ingest, "trade_dates_between",
+                        lambda start, end: ["20240102"])
+    quiet = pd.DataFrame(columns=schemas.columns_of("suspend_d"))
+    client = FakeClient(frames_by_date={"20240102": quiet})
+
+    n = ingest.update("suspend_d", to_date="20240102", client=client)
+
+    assert n == 0
+    assert state["upserts"] == []
+    assert state["watermarks"] == [("suspend_d", "20240102")]
 
 
 def test_by_date_fetch_passes_fields(monkeypatch):

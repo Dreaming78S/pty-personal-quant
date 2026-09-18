@@ -165,6 +165,23 @@ def test_migrate_skips_widening_when_column_absent(monkeypatch):
     assert executed == []
 
 
+def test_migrate_skips_tables_that_do_not_exist(monkeypatch):
+    executed = []
+    queried = []
+
+    def read_df(sql, params=None):
+        queried.append(sql)
+        return pd.DataFrame()
+
+    monkeypatch.setattr(schemas.db, "read_df", read_df)
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == []
+    assert executed == []
+    assert all("information_schema.TABLES" in sql for sql in queried)
+
+
 def test_migrate_skips_existing_column(monkeypatch):
     executed = []
     monkeypatch.setattr(
@@ -179,8 +196,13 @@ def test_migrate_skips_existing_column(monkeypatch):
 
 def test_migrate_adds_missing_column(monkeypatch):
     executed = []
-    monkeypatch.setattr(schemas.db, "read_df",
-                        lambda sql, params=None: pd.DataFrame())
+
+    def read_df(sql, params=None):
+        if "information_schema.TABLES" in sql:
+            return pd.DataFrame({"TABLE_NAME": [params[0]]})
+        return pd.DataFrame()
+
+    monkeypatch.setattr(schemas.db, "read_df", read_df)
     monkeypatch.setattr(schemas.db, "execute",
                         lambda sql, params=None: executed.append(sql))
 
@@ -188,3 +210,25 @@ def test_migrate_adds_missing_column(monkeypatch):
     assert len(executed) == 1
     assert "ADD COLUMN `limit_status`" in executed[0]
     assert "AFTER `circ_mv`" in executed[0]
+
+
+def test_migrate_applies_add_then_widen_in_order(monkeypatch):
+    executed = []
+
+    def read_df(sql, params=None):
+        if "information_schema.TABLES" in sql:
+            return pd.DataFrame({"TABLE_NAME": [params[0]]})
+        if "CHARACTER_MAXIMUM_LENGTH" in sql:
+            assert params == ("stk_holdertrade", "holder_name")
+            return pd.DataFrame({"CHARACTER_MAXIMUM_LENGTH": [128]})
+        return pd.DataFrame()
+
+    monkeypatch.setattr(schemas.db, "read_df", read_df)
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == ["daily_basic.limit_status",
+                                 "stk_holdertrade.holder_name"]
+    assert len(executed) == 2
+    assert "ADD COLUMN `limit_status`" in executed[0]
+    assert "MODIFY COLUMN `holder_name` VARCHAR(255) NOT NULL" in executed[1]

@@ -38,21 +38,23 @@ class ApiSpec:
     index_codes: tuple[str, ...] = ()
     fields: str = ""
     default_start: str = "19900101"
+    must_have_data: bool = False  # 交易日内必有多条记录，空响应视为接口异常
 
 
 SPECS: dict[str, ApiSpec] = {
-    "daily": ApiSpec("daily", "daily", "by_date", fields=DAILY_FIELDS),
+    "daily": ApiSpec("daily", "daily", "by_date", fields=DAILY_FIELDS,
+                     must_have_data=True),
     "adj_factor": ApiSpec("adj_factor", "adj_factor", "by_date",
-                          fields=ADJ_FACTOR_FIELDS),
+                          fields=ADJ_FACTOR_FIELDS, must_have_data=True),
     "daily_basic": ApiSpec("daily_basic", "daily_basic", "by_date",
-                           fields=DAILY_BASIC_FIELDS),
+                           fields=DAILY_BASIC_FIELDS, must_have_data=True),
     "suspend_d": ApiSpec("suspend_d", "suspend_d", "by_date",
                          fields=SUSPEND_FIELDS),
     "stk_limit": ApiSpec("stk_limit", "stk_limit", "by_date",
-                         fields=STK_LIMIT_FIELDS),
+                         fields=STK_LIMIT_FIELDS, must_have_data=True),
     "index_daily": ApiSpec("index_daily", "index_daily", "by_date",
                            index_codes=BENCHMARK_INDEXES,
-                           fields=INDEX_DAILY_FIELDS),
+                           fields=INDEX_DAILY_FIELDS, must_have_data=True),
     "stock_basic": ApiSpec("stock_basic", "stock_basic", "full",
                            fields=STOCK_BASIC_FIELDS),
     "trade_cal": ApiSpec("trade_cal", "trade_cal", "full",
@@ -123,6 +125,12 @@ def _fetch_by_calendar_day(client: TushareClient, spec: ApiSpec,
     return client.call(spec.api, ann_date=day, fields=spec.fields)
 
 
+def _guard_empty(spec: ApiSpec, table: str, d: str, df: pd.DataFrame) -> None:
+    if spec.must_have_data and df.empty:
+        raise RuntimeError(
+            f"{table} {d} 返回空数据，疑似接口异常；水位线未推进，可直接重跑")
+
+
 def update(table: str, from_date: str | None = None, to_date: str | None = None,
            client: TushareClient | None = None) -> int:
     """更新单张表；日期表按水位线增量，full 表整体 upsert。幂等、可续跑。"""
@@ -171,6 +179,7 @@ def update(table: str, from_date: str | None = None, to_date: str | None = None,
             frames = []
             for d in batch:
                 df = _prepare(_fetch_by_calendar_day(client, spec, d), table)
+                _guard_empty(spec, table, d, df)
                 if "change_vol" not in df.columns:
                     raise RuntimeError(
                         f"{table} 在 {d} 返回了不含 change_vol 的空响应"
@@ -179,8 +188,12 @@ def update(table: str, from_date: str | None = None, to_date: str | None = None,
                 if not df.empty:
                     frames.append(df)
         else:
-            frames = [_prepare(_fetch_by_date(client, spec, d), table) for d in batch]
-            frames = [f for f in frames if not f.empty]
+            frames = []
+            for d in batch:
+                df = _prepare(_fetch_by_date(client, spec, d), table)
+                _guard_empty(spec, table, d, df)
+                if not df.empty:
+                    frames.append(df)
         if frames:
             total += db.upsert_df(table, pd.concat(frames, ignore_index=True))
         # 手工回补旧数据不能把水位线往回拨，否则下一轮会重复拉取

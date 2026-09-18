@@ -67,6 +67,29 @@ def test_ensure_cache_appends_delta(monkeypatch):
     assert seen["params"] == ("20240102",)
 
 
+def test_ensure_cache_replaces_non_date_table_snapshot(monkeypatch):
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240105")
+    first = pd.DataFrame({
+        "ts_code": ["000001.SZ"],
+        "symbol": ["000001"],
+        "name": ["平安银行"],
+    })
+    _fake_db(monkeypatch, lambda sql, params: first)
+    cache.ensure_cache("stock_basic")
+
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240106")
+    second = pd.DataFrame({
+        "ts_code": ["000001.SZ", "600001.SH"],
+        "symbol": ["000001", "600001"],
+        "name": ["平安银行", "退市示例"],
+    })
+    monkeypatch.setattr(cache.db, "read_df", lambda sql, params=None: second)
+    cache.ensure_cache("stock_basic")
+
+    df = pd.read_parquet(cache.cache_path("stock_basic"))
+    assert list(df["ts_code"]) == ["000001.SZ", "600001.SH"]
+
+
 def test_load_table_filters_range_and_codes(monkeypatch):
     df = pd.DataFrame({
         "ts_code": ["A", "A", "B"],

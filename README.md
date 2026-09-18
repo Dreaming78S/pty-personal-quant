@@ -31,8 +31,8 @@ uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17
 uv run quant data init-db                                  # 自动补新表/新列（幂等）
 uv run quant data update -t stock_company
 uv run quant data update -t new_share
-uv run quant data update -t stk_holdertrade --from-date 2015-01-01   # 约 30-45 分钟
-uv run quant data update -t daily_basic --from-date 1990-01-01       # 补 limit_status 历史
+uv run quant data update -t stk_holdertrade --from-date 2015-01-01   # 限流 90 次/分钟，2015 至今约 45-50 分钟；可先用较近区间试跑
+uv run quant data update -t daily_basic --from-date 2020-01-01       # 补 limit_status 历史（该字段历史深度未逐一验证，建议先小范围试跑）
 ```
 
 中断后断点续跑：直接重跑 `uv run quant data update -t stk_holdertrade`（不带 `--from-date`，程序从水位线继续）。

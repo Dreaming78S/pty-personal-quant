@@ -329,10 +329,21 @@ def _column_length(df) -> int | None:
         return None
 
 
+def _table_exists(table: str) -> bool:
+    df = db.read_df(
+        "SELECT TABLE_NAME FROM information_schema.TABLES "
+        "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s",
+        (table,),
+    )
+    return not df.empty
+
+
 def migrate() -> list[str]:
-    """对已存在的表补齐缺失列并加宽过窄的列（幂等）。返回实际执行的 <表>.<列> 列表。"""
+    """对已存在的表补齐缺失列并加宽过窄的列（幂等）。表不存在（如全新库）时跳过，返回实际执行的 <表>.<列> 列表。"""
     applied = []
     for table, column, sql in MIGRATIONS:
+        if not _table_exists(table):
+            continue
         df = db.read_df(
             "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
             "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s",
@@ -343,6 +354,8 @@ def migrate() -> list[str]:
         db.execute(sql)
         applied.append(f"{table}.{column}")
     for table, column, min_length, sql in WIDENINGS:
+        if not _table_exists(table):
+            continue
         df = db.read_df(
             "SELECT CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS "
             "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s",

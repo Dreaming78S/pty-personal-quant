@@ -60,7 +60,10 @@ def ensure_cache(table: str) -> Path:
     if delta.empty:
         delta = pd.DataFrame(columns=schemas.columns_of(table))
 
-    if existing.empty:
+    if date_col is None:
+        # 非日期表 delta 就是整表快照，直接替换；拼接会把每次快照重复累积
+        df = delta
+    elif existing.empty:
         df = delta
     elif delta.empty:
         df = existing

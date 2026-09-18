@@ -144,11 +144,15 @@ class TushareClient:
         return self.call("namechange", fields=NAMECHANGE_FIELDS)
 
     def fetch_stock_company(self) -> pd.DataFrame:
-        frames = [
-            self.call("stock_company", exchange=exchange,
-                      fields=STOCK_COMPANY_FIELDS)
-            for exchange in ("SSE", "SZSE", "BSE")
-        ]
+        frames = []
+        for exchange in ("SSE", "SZSE", "BSE"):
+            frame = self.call("stock_company", exchange=exchange,
+                              fields=STOCK_COMPANY_FIELDS)
+            if frame.empty:
+                raise RuntimeError(
+                    f"stock_company {exchange} 返回空数据，疑似限流或接口异常；"
+                    "已中止，请稍后重跑")
+            frames.append(frame)
         df = pd.concat(frames, ignore_index=True)
         if not df.empty:
             df = df.drop_duplicates(subset="ts_code", keep="last")
@@ -161,6 +165,9 @@ class TushareClient:
             for year in range(1990, datetime.date.today().year + 1)
         ]
         df = pd.concat(frames, ignore_index=True)
-        if not df.empty:
-            df = df.drop_duplicates(subset="ts_code", keep="last")
+        if df.empty:
+            raise RuntimeError(
+                "new_share 全部年份返回空数据，疑似限流或接口异常；"
+                "已中止，请稍后重跑")
+        df = df.drop_duplicates(subset="ts_code", keep="last")
         return df.reset_index(drop=True)

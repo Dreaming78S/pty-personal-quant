@@ -196,7 +196,14 @@ def test_fetch_new_share_loops_years_and_dedupes():
 
 
 FIELDS_BY_TABLE = {
+    "daily": DAILY_FIELDS,
+    "adj_factor": ADJ_FACTOR_FIELDS,
     "daily_basic": DAILY_BASIC_FIELDS,
+    "suspend_d": SUSPEND_FIELDS,
+    "stk_limit": STK_LIMIT_FIELDS,
+    "index_daily": INDEX_DAILY_FIELDS,
+    "trade_cal": TRADE_CAL_FIELDS,
+    "namechange": NAMECHANGE_FIELDS,
     "stock_company": STOCK_COMPANY_FIELDS,
     "new_share": NEW_SHARE_FIELDS,
     "stk_holdertrade": HOLDERTRADE_FIELDS,
@@ -208,26 +215,32 @@ def test_field_constants_match_schema_columns(table):
     assert FIELDS_BY_TABLE[table].split(",") == schemas.columns_of(table)
 
 
-def test_fetch_stock_company_handles_column_less_empty_frames():
+def test_stock_basic_fields_match_schema_plus_cnspell():
+    fields = set(STOCK_BASIC_FIELDS.split(","))
+    assert fields == set(schemas.columns_of("stock_basic")) | {"cnspell"}
+
+
+def test_fetch_stock_company_raises_when_an_exchange_frame_is_empty():
+    class FakePro:
+        def query(self, api, **kwargs):
+            if kwargs["exchange"] == "SZSE":
+                return pd.DataFrame()
+            return pd.DataFrame({"ts_code": ["600000.SH"],
+                                 "exchange": [kwargs["exchange"]]})
+
+    client = TushareClient(token="t", pro=FakePro())
+    with pytest.raises(RuntimeError, match="SZSE"):
+        client.fetch_stock_company()
+
+
+def test_fetch_new_share_raises_when_all_years_are_empty():
     class FakePro:
         def query(self, api, **kwargs):
             return pd.DataFrame()
 
     client = TushareClient(token="t", pro=FakePro())
-    df = client.fetch_stock_company()
-
-    assert df.empty
-
-
-def test_fetch_new_share_handles_column_less_empty_frames():
-    class FakePro:
-        def query(self, api, **kwargs):
-            return pd.DataFrame()
-
-    client = TushareClient(token="t", pro=FakePro())
-    df = client.fetch_new_share()
-
-    assert df.empty
+    with pytest.raises(RuntimeError, match="new_share"):
+        client.fetch_new_share()
 
 
 def test_call_uses_90_per_minute_limiter_for_stk_holdertrade():
