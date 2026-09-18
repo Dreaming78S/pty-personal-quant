@@ -133,7 +133,8 @@ class TushareClient:
             for exchange in ("SSE", "SZSE", "BSE")
         ]
         df = pd.concat(frames, ignore_index=True)
-        df = df.drop_duplicates(subset="ts_code", keep="last")
+        if not df.empty:
+            df = df.drop_duplicates(subset="ts_code", keep="last")
         return df.reset_index(drop=True)
 
     def fetch_new_share(self) -> pd.DataFrame:
@@ -143,7 +144,8 @@ class TushareClient:
             for year in range(1990, datetime.date.today().year + 1)
         ]
         df = pd.concat(frames, ignore_index=True)
-        df = df.drop_duplicates(subset="ts_code", keep="last")
+        if not df.empty:
+            df = df.drop_duplicates(subset="ts_code", keep="last")
         return df.reset_index(drop=True)
 
     def fetch_stk_holdertrade(self, ann_date: str) -> pd.DataFrame:

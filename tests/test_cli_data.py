@@ -35,6 +35,7 @@ def test_data_init_db_quiet_when_no_migrations(monkeypatch):
 
     assert result.exit_code == 0
     assert "已创建/确认 1 张表" in result.output
+    assert "已补齐" not in result.output
 
 
 def test_data_update_calls_ingest(monkeypatch):

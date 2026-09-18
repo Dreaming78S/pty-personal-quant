@@ -3,6 +3,7 @@ import datetime
 import pandas as pd
 import pytest
 
+from quant.data import schemas
 from quant.data.tushare_client import (
     ADJ_FACTOR_FIELDS,
     DAILY_BASIC_FIELDS,
@@ -207,3 +208,38 @@ def test_fetch_stk_holdertrade_passes_ann_date_and_fields():
 
     assert calls == [("stk_holdertrade", {"ann_date": "20240102",
                                           "fields": HOLDERTRADE_FIELDS})]
+
+
+FIELDS_BY_TABLE = {
+    "daily_basic": DAILY_BASIC_FIELDS,
+    "stock_company": STOCK_COMPANY_FIELDS,
+    "new_share": NEW_SHARE_FIELDS,
+    "stk_holdertrade": HOLDERTRADE_FIELDS,
+}
+
+
+@pytest.mark.parametrize("table", sorted(FIELDS_BY_TABLE))
+def test_field_constants_match_schema_columns(table):
+    assert FIELDS_BY_TABLE[table].split(",") == schemas.columns_of(table)
+
+
+def test_fetch_stock_company_handles_column_less_empty_frames():
+    class FakePro:
+        def query(self, api, **kwargs):
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    df = client.fetch_stock_company()
+
+    assert df.empty
+
+
+def test_fetch_new_share_handles_column_less_empty_frames():
+    class FakePro:
+        def query(self, api, **kwargs):
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    df = client.fetch_new_share()
+
+    assert df.empty
