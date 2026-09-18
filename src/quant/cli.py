@@ -12,3 +12,53 @@ def data_init_db() -> None:
 
     names = schemas.create_all()
     typer.echo(f"已创建/确认 {len(names)} 张表：{', '.join(names)}")
+
+
+@data_app.command("update")
+def data_update(
+    table: str = typer.Option(None, "--table", "-t", help="只更新指定表，缺省全部"),
+    from_date: str = typer.Option(None, "--from-date", help="起始日期，如 2024-01-02"),
+    to_date: str = typer.Option(None, "--to-date", help="结束日期，如 2024-01-31"),
+) -> None:
+    """从 Tushare 增量入库（可中断续跑）。"""
+    from quant.data import ingest
+    from quant.utils.dates import to_yyyymmdd
+    from quant.utils.logging import setup_logging
+
+    setup_logging()
+    start = to_yyyymmdd(from_date) if from_date else None
+    end = to_yyyymmdd(to_date) if to_date else None
+    if table:
+        results = {table: ingest.update(table, from_date=start, to_date=end)}
+    else:
+        results = ingest.update_all(from_date=start, to_date=end)
+    for name, rows in results.items():
+        typer.echo(f"{name}: 已写入 {rows} 行")
+
+
+@data_app.command("status")
+def data_status() -> None:
+    """显示各表行数、水位线与本地缓存状态。"""
+    import pandas as pd
+
+    from quant.data import cache, db, schemas
+
+    rows = []
+    for name in schemas.TABLES:
+        try:
+            count = db.scalar(f"SELECT COUNT(*) FROM `{name}`")
+        except Exception:  # noqa: BLE001 - 表不存在时提示即可
+            count = "表不存在"
+        if name == "ingest_log":
+            watermark = "-"
+        else:
+            watermark = db.scalar(
+                "SELECT last_trade_date FROM ingest_log WHERE task_name=%s", (name,)
+            ) or "-"
+        rows.append({
+            "表": name,
+            "行数": count,
+            "水位线": watermark,
+            "缓存": "有" if cache.cache_path(name).exists() else "无",
+        })
+    typer.echo(pd.DataFrame(rows).to_string(index=False))
