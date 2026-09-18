@@ -1,0 +1,6 @@
+strategy: ma_volume
+params:
+  ma_short: 5
+  ma_long: 20
+  vol_ma: 20
+  vol_ratio: 2.0
