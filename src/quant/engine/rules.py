@@ -47,20 +47,24 @@ class FeeConfig:
 
 
 def commission_of(amount: float, fees: FeeConfig) -> float:
+    amount = float(amount)
     return max(amount * fees.commission_rate, fees.min_commission)
 
 
 def buy_fee(amount: float, fees: FeeConfig) -> float:
+    amount = float(amount)
     return commission_of(amount, fees) + amount * fees.transfer_fee_rate
 
 
 def sell_fee(amount: float, fees: FeeConfig) -> float:
+    amount = float(amount)
     return (commission_of(amount, fees)
             + amount * fees.stamp_tax_rate
             + amount * fees.transfer_fee_rate)
 
 
 def apply_slippage(price: float, side: str, slippage: float) -> float:
+    price = float(price)
     if side == "buy":
         return price * (1 + slippage)
     return price * (1 - slippage)

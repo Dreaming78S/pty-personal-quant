@@ -76,7 +76,8 @@ class TushareClient:
         return self.call("index_daily", ts_code=ts_code, trade_date=trade_date)
 
     def fetch_stock_basic(self) -> pd.DataFrame:
-        return self.call("stock_basic", exchange="", list_status="L")
+        # 空字符串返回 L/D/P 全部状态，退市股也要有 list_date 供次新过滤使用
+        return self.call("stock_basic", exchange="", list_status="")
 
     def fetch_trade_cal(self, start_date: str, end_date: str) -> pd.DataFrame:
         return self.call("trade_cal", exchange="SSE",

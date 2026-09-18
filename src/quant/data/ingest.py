@@ -100,23 +100,26 @@ def update(table: str, from_date: str | None = None, to_date: str | None = None,
         set_watermark(table, to_date or latest_trade_date() or "")
         return n
 
-    watermark = None if from_date else get_watermark(table)
-    start = from_date or watermark or "19900101"
+    existing = get_watermark(table) or ""
+    start = from_date or existing or "19900101"
     end = to_date or latest_trade_date()
     if end is None:
         return 0
     dates = trade_dates_between(start, end)
-    if watermark and not from_date:
-        dates = [d for d in dates if d > watermark]
+    if existing and not from_date:
+        dates = [d for d in dates if d > existing]
 
     total = 0
+    watermark = existing
     for i in range(0, len(dates), BATCH_DATES):
         batch = dates[i:i + BATCH_DATES]
         frames = [_prepare(_fetch_by_date(client, spec, d), table) for d in batch]
         frames = [f for f in frames if not f.empty]
         if frames:
             total += db.upsert_df(table, pd.concat(frames, ignore_index=True))
-        set_watermark(table, batch[-1])
+        # 手工回补旧数据不能把水位线往回拨，否则下一轮会重复拉取
+        watermark = max(watermark, batch[-1])
+        set_watermark(table, watermark)
     return total
 
 

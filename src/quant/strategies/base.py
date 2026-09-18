@@ -55,7 +55,12 @@ class Strategy(ABC):
 
     @abstractmethod
     def generate_signals(self, bars: pd.DataFrame) -> pd.Series:
-        """bars 列至少含 trade_date/open/high/low/close/vol/amount；返回等长 bool Series。"""
+        """bars 列至少含 trade_date/open/high/low/close/vol/amount；返回等长 bool Series。
+
+        因果约定：引擎按股票传入整段已加载历史（包含信号日之后的日期），
+        策略必须只使用每行 trade_date 及之前的数据，禁止负向 shift、
+        全序列归一化、反向窗口等任何引用未来行情的写法。
+        """
 
     def rank(self, bars: pd.DataFrame) -> pd.Series | None:
         """信号数超过持仓数时的排序分，默认 None（由引擎按 rank_by 排序）。"""

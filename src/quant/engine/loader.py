@@ -1,12 +1,20 @@
 from __future__ import annotations
 
 import bisect
+import datetime
 from dataclasses import dataclass
 
 import pandas as pd
 
 from quant.data import cache
 from quant.utils.codes import board_of
+
+MARKET_NUMERIC_COLUMNS = (
+    "open", "high", "low", "close",
+    "raw_open", "raw_high", "raw_low", "raw_close", "raw_pre_close",
+    "vol", "amount", "adj_factor", "up_limit", "down_limit",
+    "turnover_rate", "volume_ratio", "pe_ttm", "pb", "total_mv", "circ_mv",
+)
 
 
 @dataclass(frozen=True)
@@ -54,9 +62,6 @@ def build_market(daily: pd.DataFrame, adj_factor: pd.DataFrame,
 
     df = df.merge(adj_factor[["ts_code", "trade_date", "adj_factor"]],
                   on=["ts_code", "trade_date"], how="left")
-    factor = df["adj_factor"].fillna(1.0)
-    for col in ("open", "high", "low", "close"):
-        df[col] = df[col] * factor
 
     basic_cols = ["ts_code", "trade_date", "turnover_rate", "volume_ratio",
                   "pe_ttm", "pb", "total_mv", "circ_mv"]
@@ -65,6 +70,16 @@ def build_market(daily: pd.DataFrame, adj_factor: pd.DataFrame,
 
     limits = stk_limit[["ts_code", "trade_date", "up_limit", "down_limit"]]
     df = df.merge(limits, on=["ts_code", "trade_date"], how="left")
+
+    # MySQL DECIMAL 经 pymysql/parquet 后是 object Decimal，统一转 float64，
+    # 避免费用层出现 Decimal * float 的 TypeError。
+    for col in MARKET_NUMERIC_COLUMNS:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    factor = df["adj_factor"].fillna(1.0)
+    for col in ("open", "high", "low", "close"):
+        df[col] = df[col] * factor
 
     suspended_keys = set(zip(
         suspend_d.loc[suspend_d["suspend_type"].astype(str) == "S", "ts_code"],
@@ -110,7 +125,8 @@ def load_market_data(start: str, end: str, warmup_days: int = 0,
     filters = filters or UniverseFilters()
     if ensure:
         cache.ensure_all(["trade_cal", "stock_basic", "namechange", "daily",
-                          "adj_factor", "daily_basic", "suspend_d", "stk_limit"])
+                          "adj_factor", "daily_basic", "suspend_d", "stk_limit",
+                          "index_daily"])
     trade_cal = cache.load_table("trade_cal")
     rank, open_dates = _date_ranks(trade_cal)
     pos = bisect.bisect_left(open_dates, start)
@@ -129,14 +145,13 @@ def load_market_data(start: str, end: str, warmup_days: int = 0,
 
 
 def resolve_trade_date(date: str | None = None) -> str:
+    """未指定日期时取 <= 今天的最近交易日，避免未来日历把选股日期推到未来。"""
     trade_cal = cache.load_table("trade_cal")
     open_dates = sorted(trade_cal.loc[trade_cal["is_open"] == 1, "cal_date"].astype(str))
-    if date:
-        candidates = [d for d in open_dates if d <= date]
-    else:
-        candidates = open_dates
+    cap = date or datetime.date.today().strftime("%Y%m%d")
+    candidates = [d for d in open_dates if d <= cap]
     if not candidates:
-        raise ValueError(f"找不到 <= {date} 的交易日")
+        raise ValueError(f"找不到 <= {cap} 的交易日")
     return candidates[-1]
 
 
@@ -149,6 +164,8 @@ def load_benchmark(ts_code: str, start: str, end: str) -> pd.Series:
                           start=start, end=end, ts_codes=[ts_code])
     if df.empty:
         raise ValueError(f"缓存中没有基准指数 {ts_code} 的行情，请先入库 index_daily")
-    series = df.sort_values("trade_date").set_index("trade_date")["close"]
+    series = pd.to_numeric(
+        df.sort_values("trade_date").set_index("trade_date")["close"],
+        errors="coerce")
     series.name = ts_code
     return series

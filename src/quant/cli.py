@@ -169,7 +169,7 @@ def backtest_cmd(
     try:
         benchmark = loader.load_benchmark(backtest_config.benchmark,
                                           backtest_config.start, backtest_config.end)
-    except ValueError as exc:
+    except (ValueError, FileNotFoundError) as exc:
         typer.echo(f"提示：{exc}，将跳过基准对比")
         benchmark = None
 

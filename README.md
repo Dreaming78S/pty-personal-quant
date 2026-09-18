@@ -24,6 +24,7 @@ uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17
 - `configs/strategies/<策略名>.yaml`：策略参数（CLI 会自动读取同名文件）
 - `configs/backtest/default.yaml`：回测默认参数（费用、调仓、持仓数、股票池过滤等）
 - 新增策略：在 `src/quant/strategies/` 新建文件，用 `@register_strategy("名称")` 装饰类并实现 `generate_signals`
+- 因果约定（重要）：`generate_signals` 收到的是该股票整段已加载历史（含信号日之后的行情），策略必须只使用每行 `trade_date` 及之前的数据，禁止负向 `shift`、全序列归一化、反向窗口等引用未来行情的写法
 
 ## 回测约定（重要）
 

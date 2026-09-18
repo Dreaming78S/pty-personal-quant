@@ -51,6 +51,20 @@ def test_call_raises_after_max_retries(monkeypatch):
         client.call("daily", trade_date="20240102")
 
 
+def test_fetch_stock_basic_requests_all_statuses():
+    calls = []
+
+    class FakePro:
+        def query(self, api, **kwargs):
+            calls.append((api, kwargs))
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    client.fetch_stock_basic()
+
+    assert calls == [("stock_basic", {"exchange": "", "list_status": ""})]
+
+
 def test_fetch_helpers_pass_kwargs():
     calls = []
 

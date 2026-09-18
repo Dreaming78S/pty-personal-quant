@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 
 from quant.engine import rules
@@ -33,3 +35,20 @@ def test_fees():
 def test_slippage():
     assert rules.apply_slippage(10.0, "buy", 0.001) == pytest.approx(10.01)
     assert rules.apply_slippage(10.0, "sell", 0.001) == pytest.approx(9.99)
+
+
+def test_fee_and_slippage_functions_accept_decimal():
+    fees = rules.FeeConfig()
+    amount = Decimal("100000")
+    price = Decimal("10.0")
+
+    buy = rules.buy_fee(amount, fees)
+    sell = rules.sell_fee(amount, fees)
+    commission = rules.commission_of(amount, fees)
+    slipped = rules.apply_slippage(price, "buy", 0.001)
+
+    assert all(isinstance(value, float) for value in (buy, sell, commission, slipped))
+    assert buy == pytest.approx(26.0)
+    assert sell == pytest.approx(76.0)
+    assert commission == pytest.approx(25.0)
+    assert slipped == pytest.approx(10.01)

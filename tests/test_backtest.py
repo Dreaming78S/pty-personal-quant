@@ -25,6 +25,13 @@ class FirstDayStrategy(Strategy):
         return bars["trade_date"] == bars.iloc[0]["trade_date"]
 
 
+class SingleCodeStrategy(Strategy):
+    Params = EmptyParams
+
+    def generate_signals(self, bars):
+        return bars["ts_code"] == "000001.SZ"
+
+
 def make_market(codes=("600000.SH",), dates=("20240101", "20240102", "20240103",
                                               "20240104", "20240105", "20240108"),
                 price=10.0, up_limit=11.0, down_limit=9.0,
@@ -163,6 +170,45 @@ def test_benchmark_normalization_and_absence():
     stale = backtest.run_backtest(AlwaysStrategy(), base_config(), market=market,
                                   benchmark=no_overlap)
     assert stale.equity["benchmark"].isna().all()
+
+
+def test_cash_never_negative_when_min_commission_binds():
+    market = make_market()
+    result = backtest.run_backtest(
+        AlwaysStrategy(), base_config(initial_cash=1005.0, fees=rules.FeeConfig()),
+        market=market)
+    assert (result.equity["cash"] >= 0).all()
+
+
+def test_cash_floor_keeps_affordable_trade():
+    market = make_market()
+    result = backtest.run_backtest(
+        AlwaysStrategy(), base_config(initial_cash=1006.5, fees=rules.FeeConfig()),
+        market=market)
+    assert not result.trades.empty
+    assert result.trades.iloc[0]["side"] == "buy"
+    assert result.trades.iloc[0]["shares"] == 100
+    assert (result.equity["cash"] >= 0).all()
+
+
+def test_delisted_position_force_settled_at_last_close():
+    dates = ("20240101", "20240102", "20240103", "20240104", "20240105")
+    market = make_market(codes=("600000.SH", "000001.SZ"), dates=dates)
+    market = market[~((market["ts_code"] == "000001.SZ") &
+                      (market["trade_date"] > "20240103"))].reset_index(drop=True)
+    market.loc[(market["ts_code"] == "000001.SZ") &
+               (market["trade_date"] == "20240103"), "close"] = 12.0
+
+    result = backtest.run_backtest(
+        SingleCodeStrategy(), base_config(end="20240105"), market=market)
+
+    assert result.trades["side"].tolist() == ["buy", "sell"]
+    sell = result.trades.iloc[-1]
+    assert sell["trade_date"] == "20240104"
+    assert sell["price"] == pytest.approx(12.0)   # 最后一根K线的收盘价（ffill）
+    assert sell["shares"] == 10000
+    final = result.equity.iloc[-1]
+    assert final["equity"] == pytest.approx(final["cash"])  # 不再持有退市股
 
 
 def test_equity_excludes_warmup_dates():

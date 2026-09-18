@@ -59,6 +59,20 @@ def test_update_respects_from_date_override(monkeypatch):
     assert [kw["trade_date"] for _, kw in client.calls] == ["20240102", "20240103"]
 
 
+def test_watermark_never_regresses_on_manual_backfill(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: "20240130")
+    monkeypatch.setattr(ingest, "trade_dates_between",
+                        lambda start, end: ["20240102", "20240103", "20240110"])
+    client = FakeClient()
+
+    ingest.update("daily", from_date="20240102", to_date="20240110", client=client)
+
+    assert [kw["trade_date"] for _, kw in client.calls] == [
+        "20240102", "20240103", "20240110"]
+    assert state["watermarks"] == [("daily", "20240130")]
+
+
 def test_watermark_not_advanced_for_failed_batch(monkeypatch):
     state = _patch_db(monkeypatch)
     monkeypatch.setattr(ingest, "BATCH_DATES", 2)

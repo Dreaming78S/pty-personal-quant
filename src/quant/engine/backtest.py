@@ -113,6 +113,11 @@ def run_backtest(strategy: Strategy, config: BacktestConfig,
                                values="close", aggfunc="last")
     close = close.reindex(all_dates).ffill()
 
+    last_market_dates = (
+        market.assign(trade_date=market["trade_date"].astype(str))
+        .groupby("ts_code")["trade_date"].max().to_dict()
+    )
+
     if benchmark is not None and not benchmark.empty:
         bench = benchmark.reindex(all_dates).ffill().reindex(dates)
         valid = bench.dropna()
@@ -138,6 +143,22 @@ def run_backtest(strategy: Strategy, config: BacktestConfig,
             "price": price, "shares": shares,
             "amount": price * shares, "fee": fee,
         })
+
+    def settle_delisted(date: str) -> None:
+        """退市股再无行情可卖：按最后已知收盘价强制结算，避免永久持有。"""
+        nonlocal cash
+        for code in list(positions):
+            last_date = last_market_dates.get(code)
+            if last_date is None or last_date >= date:
+                continue
+            position = positions.pop(code)
+            price = float(close.loc[date, code])
+            amount = price * position.shares
+            fee = rules.sell_fee(amount, config.fees)
+            cash += amount - fee
+            if code in sell_queue:
+                sell_queue.remove(code)
+            record_trade(date, code, "sell", price, position.shares, fee)
 
     def try_sell(date: str, code: str) -> bool:
         nonlocal cash
@@ -172,7 +193,12 @@ def run_backtest(strategy: Strategy, config: BacktestConfig,
             int(cash // (price * (1 + config.fees.commission_rate
                                   + config.fees.transfer_fee_rate))), code)
         shares = min(desired, cash_cap)
-        if shares <= 0:
+        minimum, increment = rules.lot_rule(code)
+        # 最低佣金可能让“按比例粗算的上限”仍然付不起，逐手回退到买得起的股数。
+        while shares >= minimum and (
+                price * shares + rules.buy_fee(price * shares, config.fees) > cash):
+            shares -= increment
+        if shares < minimum:
             return
         amount = price * shares
         fee = rules.buy_fee(amount, config.fees)
@@ -208,6 +234,7 @@ def run_backtest(strategy: Strategy, config: BacktestConfig,
     for index, date in enumerate(all_dates):
         if date not in dates:
             continue
+        settle_delisted(date)
         process_sell_queue(date)
         if pending is not None:
             execute_pending(date)
