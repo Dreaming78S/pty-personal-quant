@@ -71,3 +71,16 @@ def data_status() -> None:
             "缓存": "有" if cache.cache_path(name).exists() else "无",
         })
     typer.echo(pd.DataFrame(rows).to_string(index=False))
+
+
+@app.command("list")
+def list_strategies_cmd() -> None:
+    """列出已注册策略及其默认参数。"""
+    from quant.strategies.base import list_strategies
+
+    for name, cls in sorted(list_strategies().items()):
+        schema = cls.Params.model_json_schema().get("properties", {})
+        params = "，".join(
+            f"{key}={spec.get('default', '?')}" for key, spec in schema.items()
+        ) or "无参数"
+        typer.echo(f"{name}: {params}")
