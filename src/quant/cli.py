@@ -118,3 +118,71 @@ def select(
     typer.echo(result.to_string(index=False))
     path = report.save_selection(result, target, strategy)
     typer.echo(f"已保存：{path}")
+
+
+@app.command("backtest")
+def backtest_cmd(
+    strategy: str = typer.Option(..., "--strategy", "-s", help="策略名"),
+    start: str = typer.Option(..., "--start", help="开始日期"),
+    end: str = typer.Option(..., "--end", help="结束日期"),
+    config: str = typer.Option("configs/backtest/default.yaml", "--config",
+                               help="回测参数 YAML"),
+    top: int = typer.Option(None, "--top", "-n", help="持仓数量，覆盖配置"),
+) -> None:
+    """按策略回测并生成报告。"""
+    from pathlib import Path
+
+    import yaml
+
+    from quant.engine import backtest as bt
+    from quant.engine import loader, report
+    from quant.engine.metrics import compute_metrics
+    from quant.engine.rules import FeeConfig
+    from quant.strategies.base import get_strategy, load_strategy_config
+    from quant.utils.dates import to_yyyymmdd
+    from quant.utils.logging import setup_logging
+
+    setup_logging()
+    start_date, end_date = to_yyyymmdd(start), to_yyyymmdd(end)
+
+    strategy_params: dict = {}
+    strategy_config = Path("configs/strategies") / f"{strategy}.yaml"
+    if strategy_config.exists():
+        _, strategy_params = load_strategy_config(strategy_config)
+    strat = get_strategy(strategy, **strategy_params)
+
+    raw: dict = {}
+    config_path = Path(config)
+    if config_path.exists():
+        raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    raw.update(start=start_date, end=end_date, warmup_days=strat.warmup_days)
+    if top is not None:
+        raw["top_n"] = top
+    if isinstance(raw.get("fees"), dict):
+        raw["fees"] = FeeConfig(**raw["fees"])
+    backtest_config = bt.BacktestConfig(**raw)
+
+    market = loader.load_market_data(
+        backtest_config.start, backtest_config.end,
+        warmup_days=strat.warmup_days,
+        filters=bt.filters_from_config(backtest_config), ensure=True)
+    try:
+        benchmark = loader.load_benchmark(backtest_config.benchmark,
+                                          backtest_config.start, backtest_config.end)
+    except ValueError as exc:
+        typer.echo(f"提示：{exc}，将跳过基准对比")
+        benchmark = None
+
+    result = bt.run_backtest(strat, backtest_config, market=market, benchmark=benchmark)
+    metric_values = compute_metrics(result.equity, result.trades,
+                                    backtest_config.risk_free_rate)
+    folder = report.save_backtest(result, metric_values)
+
+    if result.trades.empty:
+        typer.echo("回测区间内没有成交")
+    else:
+        typer.echo(f"成交笔数：{len(result.trades)}")
+    typer.echo("指标：")
+    for key, value in metric_values.items():
+        typer.echo(f"  {key}: {value:.4f}" if isinstance(value, float) else f"  {key}: {value}")
+    typer.echo(f"报告目录：{folder}")
