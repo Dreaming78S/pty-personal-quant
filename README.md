@@ -27,14 +27,20 @@ uv run quant notify -s ma_volume --dry-run       # 只打印不发送，先预�
 ## 交易日盘后流程
 
 ```bash
-uv run quant data update     # 1. 行情增量入库（建议交易日 18:00 后执行）
+uv run quant data update     # 1. 行情增量入库（建议交易日 17:30 后执行）
 uv run quant hits update     # 2. 各策略命中表增量写入（可 -s 指定策略）
 uv run quant data status     # 3. 校验各 hit_<策略> 水位线已追平最新交易日
 uv run quant notify          # 4. 飞书推送当日卡片（可选）
 ```
 
 - 更新与推送彼此独立：`notify` 只读命中表；推送已入库的历史日期用 `-d`，无需先跑数据更新；推送前可用 `--dry-run` 预览
-- 本地 `scripts/daily_update.py` 一键执行前 3 步（等价命令；`scripts/` 未纳入版本管理）
+- 本地 `scripts/daily_update.py` 一键执行全部 4 步（`--skip-notify` 可只更新不推送；非交易日自动跳过推送；`scripts/` 未纳入版本管理）
+- 定时任务（Windows 任务计划程序）：任务名 `MyAStockQuant_DailyUpdate`，每周一至周五 **17:30** 运行 `scripts/daily_update_task.cmd`（内部调用 `daily_update.py`，日志追加到 `logs/daily_update.log`）；任务为交互式运行（需处于登录状态），某步失败会返回非零退出码且不推送，稍后手动重跑即可
+
+  ```powershell
+  schtasks /Change /TN "MyAStockQuant_DailyUpdate" /ST 18:00    # 调整执行时间
+  schtasks /Query /TN "MyAStockQuant_DailyUpdate" /V /FO LIST   # 查看状态与下次运行时间
+  ```
 
 ## 策略历史命中（hit_&lt;策略&gt;）
 
