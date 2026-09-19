@@ -26,6 +26,15 @@ def _shift_days(yyyymmdd: str, days: int) -> str:
             + timedelta(days=days)).strftime("%Y%m%d")
 
 
+def _report_prefix(min_strategies: int, new_only: bool) -> str:
+    parts = ["multi_strategy"]
+    if min_strategies != 2:
+        parts.append(f"{min_strategies}plus")
+    if new_only:
+        parts.append("new")
+    return "_".join(parts)
+
+
 def _cell(count: int, total: int) -> str:
     pct = f"{count / total * 100:.2f}%" if total else "-"
     return f"{count} ({pct})"
@@ -133,13 +142,19 @@ def main() -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = f"{start}_{end}"
-    prefix = "multi_strategy_new" if args.new_only else "multi_strategy"
+    prefix = _report_prefix(args.min_strategies, args.new_only)
     md_path = out_dir / f"{prefix}_performance_{stamp}.md"
     csv_path = out_dir / f"{prefix}_forward_returns_{stamp}.csv"
     forward.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
-    title = ("# 多策略共振（首次出现）表现报告" if args.new_only
-             else "# 多策略共振表现报告")
+    suffixes = []
+    if args.min_strategies != 2:
+        suffixes.append(f"≥{args.min_strategies} 策略")
+    if args.new_only:
+        suffixes.append("首次出现")
+    title = ("# 多策略共振"
+             + (f"（{'，'.join(suffixes)}）" if suffixes else "")
+             + "表现报告")
     event_line = (
         f"- 事件定义：T 日被 ≥{args.min_strategies} 个策略共振，"
         "且前一交易日命中策略数 ≤1（首次出现）"
