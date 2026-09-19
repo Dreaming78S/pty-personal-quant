@@ -219,3 +219,16 @@ def test_equity_excludes_warmup_dates():
     assert result.equity["trade_date"].tolist() == [
         "20240101", "20240102", "20240103", "20240104", "20240105", "20240108"]
     assert result.trades["trade_date"].min() >= "20240101"
+
+
+def test_filters_from_config_converts_boards_to_tuple():
+    config = BacktestConfig(start="20240101", end="20240131",
+                            allowed_boards=["main"])
+    filters = backtest.filters_from_config(config)
+    assert filters.allowed_boards == ("main",)
+
+
+def test_filters_from_config_keeps_none_boards():
+    config = BacktestConfig(start="20240101", end="20240131")
+    filters = backtest.filters_from_config(config)
+    assert filters.allowed_boards is None

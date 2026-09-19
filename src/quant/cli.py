@@ -89,12 +89,22 @@ def list_strategies_cmd() -> None:
         typer.echo(f"{name}: {params}")
 
 
+def _parse_boards(value: str) -> tuple[str, ...] | None:
+    value = value.strip().lower()
+    if value in ("", "all"):
+        return None
+    parts = tuple(part.strip() for part in value.split(",") if part.strip())
+    return parts or None
+
+
 @app.command("select")
 def select(
     strategy: str = typer.Option(..., "--strategy", "-s", help="策略名"),
     date: str = typer.Option(None, "--date", "-d", help="交易日，缺省最新；非交易日自动回退"),
     top: int = typer.Option(20, "--top", "-n", help="输出数量"),
     rank_by: str = typer.Option("amount", "--rank-by", help="排序字段"),
+    boards: str = typer.Option("main", "--boards",
+                               help="板块过滤，逗号分隔 main/gem/star/bse；all 表示不限"),
 ) -> None:
     """按策略筛选个股并输出 CSV。"""
     from pathlib import Path
@@ -116,8 +126,10 @@ def select(
     target = loader.resolve_trade_date(to_yyyymmdd(date) if date else None)
     market = loader.load_market_data(
         start=target, end=target, warmup_days=strat.warmup_days)
-    result = selection.run_selection(strat, target, top_n=top, market=market,
-                                     rank_by=rank_by)
+    result = selection.run_selection(
+        strat, target, top_n=top, market=market,
+        filters=loader.UniverseFilters(allowed_boards=_parse_boards(boards)),
+        rank_by=rank_by)
     typer.echo(result.to_string(index=False))
     path = report.save_selection(result, target, strategy)
     typer.echo(f"已保存：{path}")

@@ -8,6 +8,7 @@ risk_free_rate: 0.0
 exclude_st: true
 min_list_days: 60
 exclude_suspended: true
+allowed_boards: ["main"]
 fees:
   commission_rate: 0.00025
   min_commission: 5.0
