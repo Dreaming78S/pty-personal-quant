@@ -13,7 +13,8 @@ from quant.data.tushare_client import (
 class FakeClient:
     def __init__(self, fail_on_date=None, stock_basic_df=None,
                  holdertrade_df=None, stock_company_df=None, new_share_df=None,
-                 namechange_df=None, frames_by_date=None):
+                 namechange_df=None, frames_by_date=None,
+                 empty_index_codes=None):
         self.calls = []
         self.fail_on_date = fail_on_date
         self.stock_basic_df = stock_basic_df
@@ -22,6 +23,7 @@ class FakeClient:
         self.new_share_df = new_share_df
         self.namechange_df = namechange_df
         self.frames_by_date = frames_by_date or {}
+        self.empty_index_codes = set(empty_index_codes or ())
         self.stock_basic_calls = 0
         self.stock_company_calls = 0
         self.new_share_calls = 0
@@ -31,6 +33,11 @@ class FakeClient:
         return pd.DataFrame({"ts_code": ["000001.SZ"],
                              "trade_date": [trade_date],
                              "close": [10.0]})
+
+    def _index_frame(self, ts_code):
+        return pd.DataFrame({"ts_code": [ts_code],
+                             "trade_date": ["20240102"],
+                             "close": [3000.0]})
 
     def _holdertrade_frame(self):
         return pd.DataFrame({"ts_code": ["000001.SZ"],
@@ -49,6 +56,10 @@ class FakeClient:
             if self.holdertrade_df is not None:
                 return self.holdertrade_df.copy()
             return self._holdertrade_frame()
+        if api == "index_daily":
+            if kwargs.get("ts_code") in self.empty_index_codes:
+                return pd.DataFrame()
+            return self._index_frame(kwargs["ts_code"])
         if kwargs.get("trade_date") in self.frames_by_date:
             return self.frames_by_date[kwargs["trade_date"]].copy()
         return self._frame(kwargs.get("trade_date", "20240102"))
@@ -225,17 +236,43 @@ def test_by_date_fetch_passes_fields(monkeypatch):
                                        "fields": DAILY_FIELDS})]
 
 
-def test_index_daily_fetch_passes_fields(monkeypatch):
-    _patch_db(monkeypatch)
-    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
+def test_benchmark_indexes_cover_eight_broad_indexes():
+    assert ingest.BENCHMARK_INDEXES == (
+        "000300.SH", "000001.SH", "399001.SZ", "399006.SZ",
+        "000905.SH", "000852.SH", "000688.SH", "899050.BJ")
+
+
+def test_index_daily_fetches_each_code_once_over_range(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: "20231229")
     monkeypatch.setattr(ingest, "trade_dates_between",
                         lambda start, end: ["20240102"])
     client = FakeClient()
 
-    ingest.update("index_daily", to_date="20240102", client=client)
+    n = ingest.update("index_daily", to_date="20240102", client=client)
 
-    assert [kw["fields"] for _, kw in client.calls] == [INDEX_DAILY_FIELDS]
-    assert [kw["ts_code"] for _, kw in client.calls] == ["000300.SH"]
+    assert client.calls == [
+        ("index_daily", {"ts_code": code, "start_date": "20231229",
+                         "end_date": "20240102", "fields": INDEX_DAILY_FIELDS})
+        for code in ingest.BENCHMARK_INDEXES
+    ]
+    assert len(state["upserts"]) == 1
+    assert n == len(ingest.BENCHMARK_INDEXES)
+    assert state["watermarks"] == [("index_daily", "20240102")]
+
+
+def test_index_daily_raises_on_empty_frame_for_one_code(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: "20231229")
+    monkeypatch.setattr(ingest, "trade_dates_between",
+                        lambda start, end: ["20240102"])
+    client = FakeClient(empty_index_codes={"899050.BJ"})
+
+    with pytest.raises(RuntimeError, match="index_daily 899050.BJ 返回空数据"):
+        ingest.update("index_daily", to_date="20240102", client=client)
+
+    assert state["upserts"] == []
+    assert state["watermarks"] == []
 
 
 def test_by_calendar_day_passes_ann_date_and_advances_watermark(monkeypatch):

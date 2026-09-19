@@ -21,7 +21,7 @@ uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17
 
 ## 数据表
 
-- 行情：`daily`（日线）、`adj_factor`（复权因子）、`daily_basic`（每日指标，含 `limit_status` 涨跌停状态）、`suspend_d`（停牌）、`stk_limit`（涨跌停价）、`index_daily`（指数日线）
+- 行情：`daily`（日线）、`adj_factor`（复权因子）、`daily_basic`（每日指标，含 `limit_status` 涨跌停状态）、`suspend_d`（停牌）、`stk_limit`（涨跌停价）、`index_daily`（指数日线，覆盖沪深300、上证指数、深证成指、创业板指、中证500、中证1000、科创50、北证50 共 8 个宽基指数，按指数逐只区间抓取）
 - 参考：`stock_basic`（股票基础信息）、`trade_cal`（交易日历）、`namechange`（名称变更）
 - 新增：`stock_company`（上市公司基本信息）、`new_share`（IPO 新股列表）、`stk_holdertrade`（股东增减持，按公告日逐自然日抓取）
 
@@ -65,6 +65,7 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 
 - 信号在调仓日收盘产生，次日开盘成交；涨停买不进、跌停卖不掉顺延、T+1、整手规则均已实现
 - 成交与估值使用后复权价，等效分红再投资；涨跌停/停牌判定使用原始价
+- 回测基准由 `configs/backtest/default.yaml` 的 `benchmark:` 配置，默认 `000300.SH`（沪深300）；`index_daily` 已入库的 8 个指数均可切换为基准
 - 输出：`outputs/backtest/<策略>_<时间戳>/`（equity.csv / trades.csv / metrics.json / equity.png）
 
 ## 测试

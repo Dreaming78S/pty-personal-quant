@@ -24,7 +24,16 @@ from quant.data.tushare_client import (
 )
 from quant.utils.dates import calendar_days_between
 
-BENCHMARK_INDEXES = ("000300.SH",)
+BENCHMARK_INDEXES = (
+    "000300.SH",  # 沪深300（默认回测基准）
+    "000001.SH",  # 上证指数
+    "399001.SZ",  # 深证成指
+    "399006.SZ",  # 创业板指
+    "000905.SH",  # 中证500
+    "000852.SH",  # 中证1000
+    "000688.SH",  # 科创50
+    "899050.BJ",  # 北证50
+)
 BATCH_DATES = 20
 
 logger = logging.getLogger(__name__)
@@ -112,11 +121,6 @@ def _prepare(df: pd.DataFrame, table: str) -> pd.DataFrame:
 
 
 def _fetch_by_date(client: TushareClient, spec: ApiSpec, trade_date: str) -> pd.DataFrame:
-    if spec.index_codes:
-        frames = [client.call(spec.api, ts_code=code, trade_date=trade_date,
-                              fields=spec.fields)
-                  for code in spec.index_codes]
-        return pd.concat(frames, ignore_index=True)
     return client.call(spec.api, trade_date=trade_date, fields=spec.fields)
 
 
@@ -163,11 +167,30 @@ def update(table: str, from_date: str | None = None, to_date: str | None = None,
     start = from_date or existing or spec.default_start
     if spec.mode == "by_calendar_day":
         end = to_date or date.today().strftime("%Y%m%d")
-        dates = calendar_days_between(start, end)
     else:
         end = to_date or latest_trade_date()
         if end is None:
             return 0
+
+    if spec.index_codes:
+        frames = []
+        for code in spec.index_codes:
+            df = _prepare(
+                client.call(spec.api, ts_code=code, start_date=start,
+                            end_date=end, fields=spec.fields),
+                table)
+            if df.empty:
+                raise RuntimeError(
+                    f"{table} {code} 返回空数据，疑似接口异常；"
+                    "水位线未推进，可直接重跑")
+            frames.append(df)
+        total = db.upsert_df(table, pd.concat(frames, ignore_index=True))
+        set_watermark(table, end)
+        return total
+
+    if spec.mode == "by_calendar_day":
+        dates = calendar_days_between(start, end)
+    else:
         dates = trade_dates_between(start, end)
     if existing and not from_date:
         dates = [d for d in dates if d > existing]
