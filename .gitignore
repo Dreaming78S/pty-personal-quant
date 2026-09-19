@@ -16,3 +16,6 @@ logs/
 .pytest_cache/
 .coverage
 .superpowers/
+
+# 个人回测/报告脚本（本地按需修改）
+scripts/
