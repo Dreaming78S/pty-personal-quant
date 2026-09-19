@@ -5,7 +5,7 @@
 - T-2（R 的上一交易日）：必须包含 t2_strategies，且（若给定）不同策略数
   在 [t2_min_count, t2_max_count] 内；
 - 累计（R、R-1、R-2）：并集必须包含 cum_strategies，且不同策略数
-  在 [cum_min_count, cum_max_count] 内。
+  在 [cum_min_count, cum_max_count] 内（任一为 None = 该侧不限）。
 
 市值条件按推荐日 total_mv（万元 → 亿）闭区间过滤，缺市值数据的个股剔除。
 """
@@ -25,7 +25,7 @@ def screen_ideas(hits: pd.DataFrame, trade_dates: Iterable[str],
                  t2_strategies: Iterable[str] = (), t2_min_count: int | None = None,
                  t2_max_count: int | None = None,
                  cum_strategies: Iterable[str] = (),
-                 cum_min_count: int = 1,
+                 cum_min_count: int | None = 1,
                  cum_max_count: int | None = None) -> pd.DataFrame:
     """按买入思路筛选推荐事件。
 
@@ -37,7 +37,7 @@ def screen_ideas(hits: pd.DataFrame, trade_dates: Iterable[str],
         raise ValueError(f"t1_min_count 至少为 1（推荐日必须命中），收到 {t1_min_count}")
     if t2_min_count is not None and t2_min_count < 0:
         raise ValueError(f"t2_min_count 不能为负，收到 {t2_min_count}")
-    if cum_min_count < 0:
+    if cum_min_count is not None and cum_min_count < 0:
         raise ValueError(f"cum_min_count 不能为负，收到 {cum_min_count}")
     if t2_max_count is not None:
         if t2_max_count < 0:
@@ -48,7 +48,7 @@ def screen_ideas(hits: pd.DataFrame, trade_dates: Iterable[str],
     if cum_max_count is not None:
         if cum_max_count < 0:
             raise ValueError(f"cum_max_count 不能为负，收到 {cum_max_count}")
-        if cum_min_count > cum_max_count:
+        if cum_min_count is not None and cum_min_count > cum_max_count:
             raise ValueError(f"cum_min_count（{cum_min_count}）"
                              f"不能大于 cum_max_count（{cum_max_count}）")
 
@@ -101,7 +101,9 @@ def screen_ideas(hits: pd.DataFrame, trade_dates: Iterable[str],
             if t2_max_count is not None and n_t2 > t2_max_count:
                 continue
             cum = on_t1 | on_t2 | at(p2, code)
-            if not cum_required <= cum or len(cum) < cum_min_count:
+            if not cum_required <= cum:
+                continue
+            if cum_min_count is not None and len(cum) < cum_min_count:
                 continue
             if cum_max_count is not None and len(cum) > cum_max_count:
                 continue

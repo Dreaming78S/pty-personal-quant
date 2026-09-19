@@ -47,3 +47,10 @@ def test_run_signature_encodes_non_default_parameters():
         cum_min_count=1, cum_max_count=1, cum_strategies=(),
         mv_min=0.0, mv_max=50000.0,
     ) == "n1_t1ge1_t2le1_cumge1_cumle1"
+
+    assert script._run_signature(
+        hold=1, t1_min_count=2, t1_strategies=("rps_breakout",),
+        t2_min_count=1, t2_max_count=1, t2_strategies=(),
+        cum_min_count=None, cum_max_count=None, cum_strategies=(),
+        mv_min=0.0, mv_max=50000.0,
+    ) == "n1_t1ge2-rps_breakout_t2ge1_t2le1_cumgeany"

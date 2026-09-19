@@ -157,6 +157,27 @@ def test_screen_ideas_max_counts():
                                    cum_max_count=-1)
 
 
+def test_screen_ideas_cum_min_none_means_no_minimum():
+    hits = make_hits([
+        ("ma_volume", "600001.SH", "20240103"),
+        ("rps_breakout", "600001.SH", "20240104"),
+        ("turtle_trade", "600002.SH", "20240103"),
+        ("ma_volume", "600002.SH", "20240103"),
+        ("rps_breakout", "600002.SH", "20240104"),
+        ("rps_breakout", "600003.SH", "20240104"),
+    ])
+
+    def codes(**kwargs):
+        out = idea_backtest.screen_ideas(hits, DATES, "20240104", "20240104",
+                                         **kwargs)
+        return sorted(out["ts_code"])
+
+    # n_cum：600001=2、600002=3、600003=1；cum_min=None 时没有下限
+    assert codes(cum_min_count=None) == ["600001.SH", "600002.SH", "600003.SH"]
+    assert codes(cum_min_count=None, cum_max_count=1) == ["600003.SH"]
+    assert codes(cum_min_count=None, cum_max_count=2) == ["600001.SH", "600003.SH"]
+
+
 def test_screen_ideas_rejects_invalid_counts():
     hits = make_hits([("ma_volume", "600001.SH", "20240102")])
 
