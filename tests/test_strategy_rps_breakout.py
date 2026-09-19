@@ -80,17 +80,22 @@ def test_rps_breakout_skips_insufficient_window():
 
 def test_rps_breakout_no_lookahead_on_truncated_market():
     market = make_market({
-        "600000.SH": [1, 1, 1, 2.0],
-        "600001.SH": [1, 1, 1, 1.5],
-        "600002.SH": [1, 1, 1, 1.1],
+        "600000.SH": [1, 1, 1.2, 2.0],
+        "600001.SH": [1, 1, 1.0, 1.5],
+        "600002.SH": [1, 1, 0.9, 1.1],
     })
-    s = get_strategy("rps_breakout", **PARAMS)
+    s = get_strategy("rps_breakout", window=1, rps_threshold=90.0,
+                     high_ratio=0.9, high_min_bars=1)
 
     full = selection.compute_signals(s, market)
     truncated = selection.compute_signals(
         s, market[market["trade_date"] <= "20240103"])
     common = full[full["trade_date"] <= "20240103"].reset_index(drop=True)
+
+    assert common["score"].notna().any()
+    assert common["signal"].any()
     pd.testing.assert_series_equal(common["signal"], truncated["signal"])
+    pd.testing.assert_series_equal(common["score"], truncated["score"])
 
 
 def test_rps_breakout_defaults_and_warmup():
