@@ -176,6 +176,42 @@ def test_by_date_skips_empty_frames_for_non_must_have_data(monkeypatch):
     assert state["watermarks"] == [("suspend_d", "20240102")]
 
 
+def test_suspend_d_by_date_fills_missing_pk_fields(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
+    monkeypatch.setattr(ingest, "trade_dates_between",
+                        lambda start, end: ["20240102"])
+    frame = pd.DataFrame({
+        "ts_code": ["000001.SZ", "000001.SZ"],
+        "trade_date": ["20240102", "20240102"],
+        "suspend_type": [float("nan"), "S"],
+        "suspend_timing": [float("nan"), "9:30-9:40"],
+    })
+    client = FakeClient(frames_by_date={"20240102": frame})
+
+    n = ingest.update("suspend_d", to_date="20240102", client=client)
+
+    assert n == 2
+    prepared = state["upserts"][0]
+    assert list(prepared["suspend_type"]) == ["", "S"]
+    assert list(prepared["suspend_timing"]) == ["", "9:30-9:40"]
+
+
+def test_suspend_d_by_date_tolerates_absent_pk_columns(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
+    monkeypatch.setattr(ingest, "trade_dates_between",
+                        lambda start, end: ["20240102"])
+    frame = pd.DataFrame({"ts_code": ["000001.SZ"],
+                          "trade_date": ["20240102"]})
+    client = FakeClient(frames_by_date={"20240102": frame})
+
+    n = ingest.update("suspend_d", to_date="20240102", client=client)
+
+    assert n == 1
+    assert list(state["upserts"][0].columns) == ["ts_code", "trade_date"]
+
+
 def test_by_date_fetch_passes_fields(monkeypatch):
     _patch_db(monkeypatch)
     monkeypatch.setattr(ingest, "get_watermark", lambda table: None)

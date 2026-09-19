@@ -129,10 +129,10 @@ CREATE TABLE IF NOT EXISTS daily_basic (
 CREATE TABLE IF NOT EXISTS suspend_d (
   ts_code VARCHAR(12) NOT NULL COMMENT 'TS代码',
   trade_date CHAR(8) NOT NULL COMMENT '交易日期',
-  suspend_timing VARCHAR(255) COMMENT '日内停牌时段',
-  suspend_type VARCHAR(8) COMMENT 'S停牌 R复牌',
+  suspend_timing VARCHAR(255) NOT NULL DEFAULT '' COMMENT '日内停牌时段',
+  suspend_type VARCHAR(8) NOT NULL DEFAULT '' COMMENT 'S停牌 R复牌',
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-  PRIMARY KEY (ts_code, trade_date),
+  PRIMARY KEY (ts_code, trade_date, suspend_type, suspend_timing),
   KEY idx_trade_date (trade_date)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='每日停牌信息'
 """,
@@ -322,6 +322,19 @@ WIDENINGS: list[tuple[str, str, int, str]] = [
      "ALTER TABLE `namechange` MODIFY COLUMN `change_reason` VARCHAR(255) COMMENT '变更原因'"),
 ]
 
+CONDITIONAL_MIGRATIONS: list[tuple[str, str, list[str]]] = [
+    ("suspend_d_pk",
+     "SELECT COUNT(*) FROM information_schema.STATISTICS WHERE TABLE_SCHEMA=DATABASE() "
+     "AND TABLE_NAME='suspend_d' AND INDEX_NAME='PRIMARY' AND COLUMN_NAME='suspend_timing'",
+     [
+         "UPDATE `suspend_d` SET `suspend_type`='' WHERE `suspend_type` IS NULL",
+         "UPDATE `suspend_d` SET `suspend_timing`='' WHERE `suspend_timing` IS NULL",
+         "ALTER TABLE `suspend_d` MODIFY COLUMN `suspend_type` VARCHAR(8) NOT NULL DEFAULT '' COMMENT 'S停牌 R复牌'",
+         "ALTER TABLE `suspend_d` MODIFY COLUMN `suspend_timing` VARCHAR(255) NOT NULL DEFAULT '' COMMENT '日内停牌时段'",
+         "ALTER TABLE `suspend_d` DROP PRIMARY KEY, ADD PRIMARY KEY (`ts_code`,`trade_date`,`suspend_type`,`suspend_timing`)",
+     ]),
+]
+
 
 def _column_length(df) -> int | None:
     if df.empty or "CHARACTER_MAXIMUM_LENGTH" not in df.columns:
@@ -343,7 +356,7 @@ def _table_exists(table: str) -> bool:
 
 
 def migrate() -> list[str]:
-    """对已存在的表补齐缺失列并加宽过窄的列（幂等）。表不存在（如全新库）时跳过，返回实际执行的 <表>.<列> 列表。"""
+    """对已存在的表补齐缺失列、加宽过窄的列并执行条件迁移（幂等）。表不存在（如全新库）时跳过，返回实际执行的 <表>.<列> 列表。"""
     applied = []
     for table, column, sql in MIGRATIONS:
         if not _table_exists(table):
@@ -370,4 +383,18 @@ def migrate() -> list[str]:
             continue
         db.execute(sql)
         applied.append(f"{table}.{column}")
+    for name, check_sql, statements in CONDITIONAL_MIGRATIONS:
+        table = name.removesuffix("_pk")
+        if not _table_exists(table):
+            continue
+        df = db.read_df(check_sql)
+        try:
+            already_applied = int(df.iloc[0, 0]) if not df.empty else 0
+        except (TypeError, ValueError):
+            already_applied = 0
+        if already_applied > 0:
+            continue
+        for sql in statements:
+            db.execute(sql)
+        applied.append(f"{table}.pk")
     return applied

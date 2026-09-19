@@ -108,8 +108,95 @@ def test_stk_holdertrade_holder_name_widened_to_255():
 
 
 def test_suspend_timing_widened_to_255():
-    assert ("suspend_timing VARCHAR(255) COMMENT '日内停牌时段'"
+    assert ("suspend_timing VARCHAR(255) NOT NULL DEFAULT '' "
+            "COMMENT '日内停牌时段'"
             in schemas.TABLES["suspend_d"].ddl)
+
+
+def test_suspend_d_uses_composite_primary_key():
+    ddl = schemas.TABLES["suspend_d"].ddl
+    assert ("PRIMARY KEY (ts_code, trade_date, suspend_type, suspend_timing)"
+            in ddl)
+    assert ("suspend_type VARCHAR(8) NOT NULL DEFAULT '' COMMENT 'S停牌 R复牌'"
+            in ddl)
+    assert "KEY idx_trade_date (trade_date)" in ddl
+
+
+SUSPEND_PK_CHECK = (
+    "SELECT COUNT(*) FROM information_schema.STATISTICS "
+    "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='suspend_d' "
+    "AND INDEX_NAME='PRIMARY' AND COLUMN_NAME='suspend_timing'"
+)
+
+SUSPEND_PK_STATEMENTS = [
+    "UPDATE `suspend_d` SET `suspend_type`='' WHERE `suspend_type` IS NULL",
+    "UPDATE `suspend_d` SET `suspend_timing`='' WHERE `suspend_timing` IS NULL",
+    "ALTER TABLE `suspend_d` MODIFY COLUMN `suspend_type` VARCHAR(8) "
+    "NOT NULL DEFAULT '' COMMENT 'S停牌 R复牌'",
+    "ALTER TABLE `suspend_d` MODIFY COLUMN `suspend_timing` VARCHAR(255) "
+    "NOT NULL DEFAULT '' COMMENT '日内停牌时段'",
+    "ALTER TABLE `suspend_d` DROP PRIMARY KEY, ADD PRIMARY KEY "
+    "(`ts_code`,`trade_date`,`suspend_type`,`suspend_timing`)",
+]
+
+
+def test_conditional_migrations_define_suspend_pk():
+    assert schemas.CONDITIONAL_MIGRATIONS == [
+        ("suspend_d_pk", SUSPEND_PK_CHECK, SUSPEND_PK_STATEMENTS),
+    ]
+
+
+def _read_df_for_suspend_pk(count, table_exists=True):
+    def read_df(sql, params=None):
+        if "information_schema.TABLES" in sql:
+            if table_exists:
+                return pd.DataFrame({"TABLE_NAME": [params[0]]})
+            return pd.DataFrame()
+        if "information_schema.STATISTICS" in sql:
+            return pd.DataFrame({"COUNT(*)": [count]})
+        if "CHARACTER_MAXIMUM_LENGTH" in sql:
+            return pd.DataFrame({"CHARACTER_MAXIMUM_LENGTH": [255]})
+        return pd.DataFrame({"COLUMN_NAME": ["limit_status"]})
+    return read_df
+
+
+def test_migrate_applies_suspend_pk_in_order(monkeypatch):
+    executed = []
+    monkeypatch.setattr(schemas.db, "read_df", _read_df_for_suspend_pk(0))
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == ["suspend_d.pk"]
+    assert executed == SUSPEND_PK_STATEMENTS
+
+
+def test_migrate_skips_suspend_pk_when_already_applied(monkeypatch):
+    executed = []
+    monkeypatch.setattr(schemas.db, "read_df", _read_df_for_suspend_pk(1))
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == []
+    assert executed == []
+
+
+def test_migrate_skips_suspend_pk_when_table_absent(monkeypatch):
+    executed = []
+    queried = []
+
+    def read_df(sql, params=None):
+        queried.append(sql)
+        if "information_schema.TABLES" in sql:
+            return pd.DataFrame()
+        return pd.DataFrame({"COUNT(*)": [0]})
+
+    monkeypatch.setattr(schemas.db, "read_df", read_df)
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate() == []
+    assert executed == []
+    assert all("information_schema.TABLES" in sql for sql in queried)
 
 
 def test_namechange_change_reason_widened_to_255():
@@ -149,6 +236,8 @@ def test_widenings_cover_all_expected_columns():
 
 def _read_df_for_widening(table, column, length, column_absent=False):
     def read_df(sql, params=None):
+        if "information_schema.STATISTICS" in sql:
+            return pd.DataFrame({"COUNT(*)": [1]})
         if "CHARACTER_MAXIMUM_LENGTH" in sql:
             assert "TABLE_SCHEMA = DATABASE()" in sql
             if params == (table, column):
@@ -230,11 +319,22 @@ def test_migrate_skips_tables_that_do_not_exist(monkeypatch):
     assert all("information_schema.TABLES" in sql for sql in queried)
 
 
+def _read_df_with_suspend_pk_applied(sql, params=None):
+    if "information_schema.STATISTICS" in sql:
+        return pd.DataFrame({"COUNT(*)": [1]})
+    return None
+
+
 def test_migrate_skips_existing_column(monkeypatch):
     executed = []
-    monkeypatch.setattr(
-        schemas.db, "read_df",
-        lambda sql, params=None: pd.DataFrame({"COLUMN_NAME": ["limit_status"]}))
+
+    def read_df(sql, params=None):
+        applied = _read_df_with_suspend_pk_applied(sql, params)
+        if applied is not None:
+            return applied
+        return pd.DataFrame({"COLUMN_NAME": ["limit_status"]})
+
+    monkeypatch.setattr(schemas.db, "read_df", read_df)
     monkeypatch.setattr(schemas.db, "execute",
                         lambda sql, params=None: executed.append(sql))
 
@@ -248,6 +348,9 @@ def test_migrate_adds_missing_column(monkeypatch):
     def read_df(sql, params=None):
         if "information_schema.TABLES" in sql:
             return pd.DataFrame({"TABLE_NAME": [params[0]]})
+        applied = _read_df_with_suspend_pk_applied(sql, params)
+        if applied is not None:
+            return applied
         return pd.DataFrame()
 
     monkeypatch.setattr(schemas.db, "read_df", read_df)
@@ -266,6 +369,8 @@ def test_migrate_applies_add_then_widen_in_order(monkeypatch):
     def read_df(sql, params=None):
         if "information_schema.TABLES" in sql:
             return pd.DataFrame({"TABLE_NAME": [params[0]]})
+        if "information_schema.STATISTICS" in sql:
+            return pd.DataFrame({"COUNT(*)": [1]})
         if "CHARACTER_MAXIMUM_LENGTH" in sql:
             if params == ("stk_holdertrade", "holder_name"):
                 return pd.DataFrame({"CHARACTER_MAXIMUM_LENGTH": [128]})

@@ -194,6 +194,10 @@ def update(table: str, from_date: str | None = None, to_date: str | None = None,
             for d in batch:
                 df = _prepare(_fetch_by_date(client, spec, d), table)
                 _guard_empty(spec, table, d, df)
+                if table == "suspend_d":
+                    for column in ("suspend_timing", "suspend_type"):
+                        if column in df.columns:
+                            df[column] = df[column].fillna("")
                 if not df.empty:
                     frames.append(df)
         if frames:
