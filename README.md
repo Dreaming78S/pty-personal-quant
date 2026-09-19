@@ -15,7 +15,8 @@
 uv run quant data status                         # 查看各表行数/水位线/缓存状态
 uv run quant data update -t daily --from-date 2024-01-02 --to-date 2024-01-31
 uv run quant list                                # 已注册策略
-uv run quant select -s ma_volume -n 20           # 选股（默认最新交易日）
+uv run quant select -s ma_volume -n 20           # 选股（默认最新交易日、默认只选主板）
+uv run quant select -s ma_volume --boards all    # 不限板块（main,gem,star,bse 可逗号组合）
 uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17
 ```
 
@@ -55,6 +56,17 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 - 全量数据需预留数 GB MySQL 存储空间，请确认实例容量后再执行
 
 ## 策略参数
+
+内置策略（默认只选沪深主板，非ST、非次新、非停牌）：
+
+| 策略 | 一句话逻辑 | 排序 |
+|---|---|---|
+| `ma_volume` | 5 日均线上穿 20 日均线 + 放量 | 成交额 |
+| `turtle_trade` | 20 日新高 + 成交额过亿 + 阳线真涨 | 流通市值 |
+| `high_tight_flag` | 强动量后高位窄幅缩量整理 | 成交额 |
+| `limit_up_shakeout` | 昨日涨停、今日放量收阴不破昨收 | 成交额 |
+| `uptrend_limit_down` | 上升趋势中放量跌停（错杀） | 成交额 |
+| `rps_breakout` | 120 日 RPS≥90 且接近 120 日高点 | RPS |
 
 - `configs/strategies/<策略名>.yaml`：策略参数（CLI 会自动读取同名文件）
 - `configs/backtest/default.yaml`：回测默认参数（费用、调仓、持仓数、股票池过滤等）
