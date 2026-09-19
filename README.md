@@ -117,6 +117,23 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 - 重算后可复核：用交易日历重算历史列自洽性，并与 `uv run quant select -s <名称>` 当日结果逐代码比对；依赖命中表的报告/回测按需重跑
 - 改了 `Params` 字段需同步 yaml；`warmup_days` 变化无需特殊处理（命中计算总是加载完整历史面板）
 
+### 暂时禁用策略
+
+与删除的区别：不删任何数据，保留配置与水位线，随时可恢复；命中表和历史命中继续留在库中。
+
+1. 策略文件改名：`src/quant/strategies/<名称>.py` → `_<名称>.py`（下划线开头会被自动发现跳过，策略即从 `quant list`、`hits update -s all` 中消失）
+2. 测试文件同步改名：`tests/test_strategy_<名称>.py` → `_test_strategy_<名称>.py`（pytest 不收集下划线开头的文件，避免因策略未注册而失败）
+3. `src/quant/data/schemas.py` 的 `HIT_STRATEGIES` 移除该名；`tests/test_schemas.py` 元组断言同步——共振报告、通用回测、盘后一键脚本随即不再包含该策略
+4. 以下内容都不要动：`configs/strategies/<名称>.yaml`、数据库表 `hit_<名称>`、`ingest_log` 中 `hit_<名称>` 的水位线
+5. 验证：`uv run quant list` 不再出现、`uv run pytest -q` 通过；盘后一键脚本不会把该表误报为"未追平"
+6. 恢复启用：文件改回原名、名字加回 `HIT_STRATEGIES`（测试同步），然后从旧水位线自动补齐禁用期间缺失的数据：
+
+   ```bash
+   uv run quant hits update -s <名称>     # 不带 --from-date：从旧水位线续算，自动补缺口
+   ```
+
+   若禁用期间还改过参数或逻辑，改为 `--from-date 2024-01-01` 全量重算。
+
 ### 删除策略
 
 1. 删 `src/quant/strategies/<名称>.py`、`configs/strategies/<名称>.yaml`、`tests/test_strategy_<名称>.py`
