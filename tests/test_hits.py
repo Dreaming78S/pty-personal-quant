@@ -208,6 +208,8 @@ def test_fill_hits_loads_full_history_panel(monkeypatch):
     args, kwargs = captured["loads"][0]
     assert args == ("20240103", "20240104")
     assert kwargs["warmup_days"] == 123
+    # 必须先刷新本地缓存：否则当天行情读不到时会静默漏记并推进水位线
+    assert kwargs["ensure"] is True
 
 
 def test_fill_hits_replaces_explicit_window(monkeypatch):

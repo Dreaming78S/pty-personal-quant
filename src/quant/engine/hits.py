@@ -116,10 +116,11 @@ def fill_hits(strategy: str = "all", from_date: str | None = None,
     bounds = [d for _, _, _, dates in plans for d in (dates[:1] + dates[-1:])]
     market: pd.DataFrame | None = None
     if bounds:
-        # 行窗口指标依赖累计行数：一律加载完整历史，保证结果与水位线/面板无关
+        # 行窗口指标依赖累计行数：一律加载完整历史，保证结果与水位线/面板无关；
+        # ensure=True 先从 MySQL 刷新本地缓存，避免当天行情未同步时静默漏记
         market = loader.load_market_data(
             min(bounds), max(bounds),
-            warmup_days=loader.history_warmup_days(min(bounds)))
+            warmup_days=loader.history_warmup_days(min(bounds)), ensure=True)
         market["trade_date"] = market["trade_date"].astype(str)
 
     rank_of = {d: i for i, d in enumerate(loader.open_trade_dates())}
