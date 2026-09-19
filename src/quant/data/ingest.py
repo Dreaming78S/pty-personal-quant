@@ -129,10 +129,14 @@ def _fetch_by_calendar_day(client: TushareClient, spec: ApiSpec,
     return client.call(spec.api, ann_date=day, fields=spec.fields)
 
 
+def _raise_empty(table: str, label: str) -> None:
+    raise RuntimeError(
+        f"{table} {label} 返回空数据，疑似接口异常；水位线未推进，可直接重跑")
+
+
 def _guard_empty(spec: ApiSpec, table: str, d: str, df: pd.DataFrame) -> None:
     if spec.must_have_data and df.empty:
-        raise RuntimeError(
-            f"{table} {d} 返回空数据，疑似接口异常；水位线未推进，可直接重跑")
+        _raise_empty(table, d)
 
 
 def update(table: str, from_date: str | None = None, to_date: str | None = None,
@@ -174,18 +178,31 @@ def update(table: str, from_date: str | None = None, to_date: str | None = None,
 
     if spec.index_codes:
         frames = []
+        newest = ""
         for code in spec.index_codes:
             df = _prepare(
                 client.call(spec.api, ts_code=code, start_date=start,
                             end_date=end, fields=spec.fields),
                 table)
             if df.empty:
-                raise RuntimeError(
-                    f"{table} {code} 返回空数据，疑似接口异常；"
-                    "水位线未推进，可直接重跑")
+                # 早期区间可能早于指数发布日：用宽区间探活一次，
+                # 有数据说明只是该窗口无数据，跳过；探测也为空才是真异常
+                probe = client.call(
+                    spec.api, ts_code=code, start_date=start,
+                    end_date=date.today().strftime("%Y%m%d"),
+                    fields=spec.fields)
+                if probe.empty:
+                    _raise_empty(table, f"{code} 在 {start}~{end}")
+                logger.warning("%s %s 在 %s~%s 无数据（指数尚未发布），跳过",
+                               table, code, start, end)
+                continue
             frames.append(df)
+            newest = max(newest, df["trade_date"].astype(str).max())
+        if not frames:
+            return 0
         total = db.upsert_df(table, pd.concat(frames, ignore_index=True))
-        set_watermark(table, end)
+        # 与 by_date 一致：水位线只前进不后退，且不越过实际入库的最新交易日
+        set_watermark(table, max(existing or "", newest))
         return total
 
     if spec.mode == "by_calendar_day":

@@ -1,3 +1,6 @@
+import datetime
+import logging
+
 import pandas as pd
 import pytest
 
@@ -9,12 +12,18 @@ from quant.data.tushare_client import (
     TRADE_CAL_FIELDS,
 )
 
+INDEX_CODES = [
+    "000300.SH", "000001.SH", "399001.SZ", "399006.SZ",
+    "000905.SH", "000852.SH", "000688.SH", "899050.BJ",
+]
+
 
 class FakeClient:
     def __init__(self, fail_on_date=None, stock_basic_df=None,
                  holdertrade_df=None, stock_company_df=None, new_share_df=None,
                  namechange_df=None, frames_by_date=None,
-                 empty_index_codes=None):
+                 empty_index_codes=None, pre_inception=None,
+                 index_trade_date=None):
         self.calls = []
         self.fail_on_date = fail_on_date
         self.stock_basic_df = stock_basic_df
@@ -24,6 +33,8 @@ class FakeClient:
         self.namechange_df = namechange_df
         self.frames_by_date = frames_by_date or {}
         self.empty_index_codes = set(empty_index_codes or ())
+        self.pre_inception = dict(pre_inception or {})
+        self.index_trade_date = index_trade_date
         self.stock_basic_calls = 0
         self.stock_company_calls = 0
         self.new_share_calls = 0
@@ -34,10 +45,20 @@ class FakeClient:
                              "trade_date": [trade_date],
                              "close": [10.0]})
 
-    def _index_frame(self, ts_code):
+    def _index_frame(self, ts_code, trade_date):
         return pd.DataFrame({"ts_code": [ts_code],
-                             "trade_date": ["20240102"],
+                             "trade_date": [trade_date],
                              "close": [3000.0]})
+
+    def _index_response(self, kwargs):
+        code = kwargs["ts_code"]
+        if code in self.empty_index_codes:
+            return pd.DataFrame()
+        end = kwargs.get("end_date", "")
+        inception = self.pre_inception.get(code)
+        if inception and end < inception:
+            return pd.DataFrame()
+        return self._index_frame(code, self.index_trade_date or end)
 
     def _holdertrade_frame(self):
         return pd.DataFrame({"ts_code": ["000001.SZ"],
@@ -57,9 +78,7 @@ class FakeClient:
                 return self.holdertrade_df.copy()
             return self._holdertrade_frame()
         if api == "index_daily":
-            if kwargs.get("ts_code") in self.empty_index_codes:
-                return pd.DataFrame()
-            return self._index_frame(kwargs["ts_code"])
+            return self._index_response(kwargs)
         if kwargs.get("trade_date") in self.frames_by_date:
             return self.frames_by_date[kwargs["trade_date"]].copy()
         return self._frame(kwargs.get("trade_date", "20240102"))
@@ -245,8 +264,6 @@ def test_benchmark_indexes_cover_eight_broad_indexes():
 def test_index_daily_fetches_each_code_once_over_range(monkeypatch):
     state = _patch_db(monkeypatch)
     monkeypatch.setattr(ingest, "get_watermark", lambda table: "20231229")
-    monkeypatch.setattr(ingest, "trade_dates_between",
-                        lambda start, end: ["20240102"])
     client = FakeClient()
 
     n = ingest.update("index_daily", to_date="20240102", client=client)
@@ -254,22 +271,68 @@ def test_index_daily_fetches_each_code_once_over_range(monkeypatch):
     assert client.calls == [
         ("index_daily", {"ts_code": code, "start_date": "20231229",
                          "end_date": "20240102", "fields": INDEX_DAILY_FIELDS})
-        for code in ingest.BENCHMARK_INDEXES
+        for code in INDEX_CODES
     ]
     assert len(state["upserts"]) == 1
-    assert n == len(ingest.BENCHMARK_INDEXES)
+    assert n == 8
     assert state["watermarks"] == [("index_daily", "20240102")]
 
 
-def test_index_daily_raises_on_empty_frame_for_one_code(monkeypatch):
+def test_index_daily_watermark_never_regresses_on_bounded_backfill(monkeypatch):
     state = _patch_db(monkeypatch)
-    monkeypatch.setattr(ingest, "get_watermark", lambda table: "20231229")
-    monkeypatch.setattr(ingest, "trade_dates_between",
-                        lambda start, end: ["20240102"])
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: "20240130")
+    client = FakeClient()
+
+    ingest.update("index_daily", from_date="20240102", to_date="20240110",
+                  client=client)
+
+    assert [kw["start_date"] for _, kw in client.calls] == ["20240102"] * 8
+    assert [kw["end_date"] for _, kw in client.calls] == ["20240110"] * 8
+    assert state["watermarks"] == [("index_daily", "20240130")]
+
+
+def test_index_daily_watermark_never_exceeds_returned_trade_date(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
+    client = FakeClient(index_trade_date="20240110")
+
+    ingest.update("index_daily", to_date="20991231", client=client)
+
+    assert state["watermarks"] == [("index_daily", "20240110")]
+
+
+def test_index_daily_skips_pre_inception_code_with_warning(monkeypatch, caplog):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
+    client = FakeClient(pre_inception={"000688.SH": "20190722",
+                                       "899050.BJ": "20221121"})
+
+    with caplog.at_level(logging.WARNING, logger="quant.data.ingest"):
+        n = ingest.update("index_daily", from_date="20150101",
+                          to_date="20181231", client=client)
+
+    assert n == 6
+    assert len(state["upserts"]) == 1
+    assert len(state["upserts"][0]) == 6
+    assert state["watermarks"] == [("index_daily", "20181231")]
+    today = datetime.date.today().strftime("%Y%m%d")
+    probes = [kw for _, kw in client.calls if kw["end_date"] == today]
+    assert [kw["ts_code"] for kw in probes] == ["000688.SH", "899050.BJ"]
+    assert "000688.SH" in caplog.text
+    assert "899050.BJ" in caplog.text
+    assert "指数尚未发布" in caplog.text
+
+
+def test_index_daily_raises_when_code_and_probe_are_empty(monkeypatch):
+    state = _patch_db(monkeypatch)
+    monkeypatch.setattr(ingest, "get_watermark", lambda table: None)
     client = FakeClient(empty_index_codes={"899050.BJ"})
 
-    with pytest.raises(RuntimeError, match="index_daily 899050.BJ 返回空数据"):
-        ingest.update("index_daily", to_date="20240102", client=client)
+    with pytest.raises(
+            RuntimeError,
+            match=r"index_daily 899050\.BJ 在 20150101~20181231 返回空数据"):
+        ingest.update("index_daily", from_date="20150101",
+                      to_date="20181231", client=client)
 
     assert state["upserts"] == []
     assert state["watermarks"] == []
