@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -17,6 +18,12 @@ from quant.utils.dates import to_yyyymmdd
 
 BUCKETS = hit_performance.BUCKET_NAMES
 PLAIN_COLUMNS = ("名称", "事件数", "可计算", "停牌跳过", "数据不足")
+LOOKBACK_DAYS = 40
+
+
+def _shift_days(yyyymmdd: str, days: int) -> str:
+    return (datetime.strptime(yyyymmdd, "%Y%m%d")
+            + timedelta(days=days)).strftime("%Y%m%d")
 
 
 def _cell(count: int, total: int) -> str:
@@ -75,6 +82,8 @@ def main() -> None:
     parser.add_argument("--end", default=None, help="结束日期，缺省最新交易日")
     parser.add_argument("--min-strategies", type=int, default=2,
                         help="共振策略数下限")
+    parser.add_argument("--new-only", action="store_true",
+                        help="只统计首次出现的共振：前一交易日命中策略数 ≤1")
     parser.add_argument("--output-dir", default="outputs/reports")
     args = parser.parse_args()
 
@@ -85,8 +94,15 @@ def main() -> None:
     if market.empty:
         raise SystemExit(f"{start}~{end} 区间内没有行情数据")
 
-    hits = _load_hits(start, end)
-    events = hit_performance.group_co_hits(hits, min_strategies=args.min_strategies)
+    hits_start = _shift_days(start, -LOOKBACK_DAYS) if args.new_only else start
+    hits = _load_hits(hits_start, end)
+    if args.new_only:
+        events = hit_performance.co_hit_starts(
+            hits, loader.open_trade_dates(), min_strategies=args.min_strategies)
+        events = events[events["trade_date"] >= start].reset_index(drop=True)
+    else:
+        events = hit_performance.group_co_hits(
+            hits, min_strategies=args.min_strategies)
     if events.empty:
         raise SystemExit(f"区间内没有 ≥{args.min_strategies} 策略共振的命中")
 
@@ -112,15 +128,29 @@ def main() -> None:
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     stamp = f"{start}_{end}"
-    md_path = out_dir / f"multi_strategy_performance_{stamp}.md"
-    csv_path = out_dir / f"multi_strategy_forward_returns_{stamp}.csv"
+    prefix = "multi_strategy_new" if args.new_only else "multi_strategy"
+    md_path = out_dir / f"{prefix}_performance_{stamp}.md"
+    csv_path = out_dir / f"{prefix}_forward_returns_{stamp}.csv"
     forward.to_csv(csv_path, index=False, encoding="utf-8-sig")
 
+    title = ("# 多策略共振（首次出现）表现报告" if args.new_only
+             else "# 多策略共振表现报告")
+    event_line = (
+        f"- 事件定义：T 日被 ≥{args.min_strategies} 个策略共振，"
+        "且前一交易日命中策略数 ≤1（首次出现）"
+        if args.new_only else
+        f"- 事件定义：同一交易日同一股票被 ≥{args.min_strategies} 个策略命中"
+    )
     header = [
-        "# 多策略共振表现报告",
+        title,
         "",
         f"- 区间：{start} ~ {end}（按命中日 T 起算）",
-        f"- 事件定义：同一交易日同一股票被 ≥{args.min_strategies} 个策略命中",
+        event_line,
+    ]
+    if args.new_only:
+        header.append("- 前一交易日 = 交易日历上紧邻的上一个交易日；未命中、停牌均按 0 个策略计"
+                      "（命中表数据自 2024-01-02 起）")
+    header += [
         "- 规则：T 日共振 → T+1 开盘价买入 → T+2 收盘价卖出（不复权价，即行情界面真实成交价；持有期内分红现金未计入）",
         "- 收益率 =（T+2 收盘 − T+1 开盘）/ T+1 开盘 × 100%；>0 记盈利，≤0 记亏",
         "- T+1/T+2 为交易日历上紧邻的两个交易日；买入日或卖出日无行情（停牌）跳过，"
@@ -136,8 +166,8 @@ def main() -> None:
         ("## 按策略参与（一个事件计入其全部成员策略，合计会大于总览）", by_strategy),
     ]
     body = []
-    for title, frame in sections:
-        body += [title, ""] + _table_md(frame) + [""]
+    for section_title, frame in sections:
+        body += [section_title, ""] + _table_md(frame) + [""]
     md_path.write_text("\n".join(header + body), encoding="utf-8")
     print(f"报告：{md_path}")
     print(f"明细：{csv_path}")

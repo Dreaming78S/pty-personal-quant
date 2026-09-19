@@ -67,6 +67,34 @@ def bucket_counts(stats: dict[str, int]) -> dict[str, int]:
     return {name: stats[name] for name in BUCKET_NAMES}
 
 
+def co_hit_starts(hits: pd.DataFrame, trade_dates, min_strategies: int = 2) -> pd.DataFrame:
+    """共振段的首次出现事件：当日 ≥min_strategies 个策略命中，且前一交易日
+    命中的策略数 ≤1（0 或 1 个，含未命中与停牌）。
+
+    hits 需含 strategy/ts_code/trade_date 列；trade_dates 为交易日历（YYYYMMDD）。
+    前一日未知（T 为日历首日）时剔除。返回列同 group_co_hits。
+    """
+    hits = hits.copy()
+    hits["trade_date"] = hits["trade_date"].astype(str)
+    dates = sorted({str(d) for d in trade_dates})
+    prev_of = {dates[i]: dates[i - 1] for i in range(1, len(dates))}
+    counts = (hits.groupby(["ts_code", "trade_date"])["strategy"].nunique()
+              .rename("prev_n"))
+
+    events = group_co_hits(hits, min_strategies=min_strategies)
+    events["prev_date"] = events["trade_date"].map(prev_of)
+    prev = events[["ts_code", "prev_date"]].merge(
+        counts.reset_index(), left_on=["ts_code", "prev_date"],
+        right_on=["ts_code", "trade_date"], how="left")["prev_n"]
+    events["prev_n"] = prev.to_numpy()
+    known = events["prev_date"].notna()
+    events.loc[known, "prev_n"] = events.loc[known, "prev_n"].fillna(0)
+
+    return (events[events["prev_n"] <= 1]
+            [["ts_code", "trade_date", "strategies", "n_strategies"]]
+            .reset_index(drop=True))
+
+
 def group_co_hits(hits: pd.DataFrame, min_strategies: int = 2) -> pd.DataFrame:
     """按 (ts_code, trade_date) 聚合命中策略，返回共振事件。
 

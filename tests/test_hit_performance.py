@@ -85,6 +85,39 @@ def test_group_co_hits_keeps_only_multi_strategy_events():
     assert len(all_events) == 3
 
 
+def test_co_hit_starts_keeps_only_first_day_of_episode():
+    dates = ["20260105", "20260106", "20260107", "20260108"]
+    rows = [
+        ("ma_volume", "600000.SH", "20260105"),
+        ("ma_volume", "600000.SH", "20260106"),
+        ("rps_breakout", "600000.SH", "20260106"),
+        ("ma_volume", "600000.SH", "20260107"),
+        ("rps_breakout", "600000.SH", "20260107"),
+        ("ma_volume", "600000.SH", "20260108"),
+        ("rps_breakout", "600002.SH", "20260106"),
+        ("turtle_trade", "600002.SH", "20260106"),
+        ("rps_breakout", "600002.SH", "20260107"),
+        ("uptrend_limit_down", "600003.SH", "20260106"),
+        ("ma_volume", "600003.SH", "20260107"),
+        ("rps_breakout", "600003.SH", "20260107"),
+        ("ma_volume", "600004.SH", "20260105"),
+        ("rps_breakout", "600004.SH", "20260105"),
+    ]
+    hits = pd.DataFrame(rows, columns=["strategy", "ts_code", "trade_date"])
+
+    starts = hit_performance.co_hit_starts(hits, dates)
+
+    assert list(starts.columns) == ["ts_code", "trade_date",
+                                    "strategies", "n_strategies"]
+    assert list(starts["ts_code"]) == ["600000.SH", "600002.SH", "600003.SH"]
+    assert list(starts["trade_date"]) == ["20260106", "20260106", "20260107"]
+    assert list(starts["n_strategies"]) == [2, 2, 2]
+    # 600000 在 0107 前一日已共振（2 个策略）→ 不算首次
+    # 600004 位于日历首日，前一日无从判断 → 剔除
+    assert list(hit_performance.co_hit_starts(hits, dates, min_strategies=3)
+                ["ts_code"]) == []
+
+
 def test_bucket_stats_ignores_nan():
     stats = hit_performance.bucket_stats(pd.Series([1.0, None, 2.0]))
 
