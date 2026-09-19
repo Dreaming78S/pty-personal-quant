@@ -1,0 +1,4 @@
+strategy: turtle_trade
+params:
+  high_days: 20
+  min_amount: 100000000
