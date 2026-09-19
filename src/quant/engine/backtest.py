@@ -61,7 +61,9 @@ def rebalance_dates(trade_dates: list[str], freq: str) -> list[str]:
 
 def filters_from_config(config: BacktestConfig) -> UniverseFilters:
     boards = config.allowed_boards
-    if boards is not None:
+    if isinstance(boards, str):
+        boards = (boards,)
+    elif boards is not None:
         boards = tuple(boards)
     return UniverseFilters(
         exclude_st=config.exclude_st,

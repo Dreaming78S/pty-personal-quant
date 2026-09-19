@@ -89,12 +89,26 @@ def list_strategies_cmd() -> None:
         typer.echo(f"{name}: {params}")
 
 
+VALID_BOARDS = ("main", "gem", "star", "bse")
+
+
 def _parse_boards(value: str) -> tuple[str, ...] | None:
     value = value.strip().lower()
     if value in ("", "all"):
         return None
     parts = tuple(part.strip() for part in value.split(",") if part.strip())
-    return parts or None
+    if not parts:
+        return None
+    if "all" in parts:
+        raise typer.BadParameter(
+            f"all 不能与其他板块名混用（收到：{value}）；"
+            "如需不限板块请单独使用 --boards all")
+    unknown = [part for part in parts if part not in VALID_BOARDS]
+    if unknown:
+        raise typer.BadParameter(
+            f"未知板块：{'、'.join(unknown)}；"
+            f"可选值为 {'、'.join(VALID_BOARDS)}，或用 all 表示不限")
+    return parts
 
 
 @app.command("select")

@@ -228,6 +228,13 @@ def test_filters_from_config_converts_boards_to_tuple():
     assert filters.allowed_boards == ("main",)
 
 
+def test_filters_from_config_normalizes_string_board():
+    config = BacktestConfig(start="20240101", end="20240131",
+                            allowed_boards="main")
+    filters = backtest.filters_from_config(config)
+    assert filters.allowed_boards == ("main",)
+
+
 def test_filters_from_config_keeps_none_boards():
     config = BacktestConfig(start="20240101", end="20240131")
     filters = backtest.filters_from_config(config)

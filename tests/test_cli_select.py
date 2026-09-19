@@ -67,3 +67,24 @@ def test_select_boards_accepts_comma_list(monkeypatch):
                                  "--boards", "main,gem"])
     assert result.exit_code == 0
     assert captured["filters"].allowed_boards == ("main", "gem")
+
+
+def test_select_boards_rejects_unknown_token(monkeypatch):
+    captured = {}
+    _patch_select(monkeypatch, captured)
+    result = runner.invoke(app, ["select", "-s", "ma_volume",
+                                 "--boards", "mian"])
+    assert result.exit_code != 0
+    assert "未知板块" in result.output
+    assert "mian" in result.output
+    assert captured.get("filters") is None
+
+
+def test_select_boards_rejects_all_mixed_with_names(monkeypatch):
+    captured = {}
+    _patch_select(monkeypatch, captured)
+    result = runner.invoke(app, ["select", "-s", "ma_volume",
+                                 "--boards", "all,main"])
+    assert result.exit_code != 0
+    assert "不能" in result.output
+    assert captured.get("filters") is None
