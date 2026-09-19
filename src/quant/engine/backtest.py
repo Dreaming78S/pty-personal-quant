@@ -15,7 +15,7 @@ class BacktestConfig:
     end: str
     initial_cash: float = 1_000_000.0
     rebalance: str = "weekly"
-    top_n: int = 10
+    top_n: int | None = None
     rank_by: str = "amount"
     execution: str = "next_open"
     benchmark: str = "000300.SH"
@@ -231,7 +231,9 @@ def run_backtest(strategy: Strategy, config: BacktestConfig,
             position.shares * float(close.loc[prev_date, position.ts_code])
             for position in positions.values()
         )
-        target_amount = equity_estimate / config.top_n
+        # top_n 为空表示等权买入当日全部信号股，按信号数量均分资金
+        target_count = config.top_n if config.top_n else max(len(pending or []), 1)
+        target_amount = equity_estimate / target_count
         for code in pending or []:
             if code not in positions:
                 try_buy(date, code, target_amount)
@@ -247,7 +249,9 @@ def run_backtest(strategy: Strategy, config: BacktestConfig,
         if date in rebal and index + 1 < len(all_dates):
             ranked = signal_by_date.get(date, [])
             allowed = eligible_by_date.get(date, set())
-            pending = [code for code in ranked if code in allowed][:config.top_n]
+            pending = [code for code in ranked if code in allowed]
+            if config.top_n:
+                pending = pending[:config.top_n]
 
         equity = cash + sum(
             position.shares * float(close.loc[date, position.ts_code])

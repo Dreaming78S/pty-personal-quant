@@ -105,6 +105,29 @@ def test_run_selection_raises_on_empty_market(monkeypatch):
         selection.run_selection(s, "20240103", market=None)
 
 
+def test_run_selection_default_returns_all_hits(monkeypatch):
+    codes = [f"6001{i:02d}.SH" for i in range(25)]
+    rows = []
+    for i, code in enumerate(codes):
+        rows.append({
+            "ts_code": code, "trade_date": "20240103",
+            "open": 10.0, "high": 11.0, "low": 9.0, "close": 10.5,
+            "raw_close": 10.5, "vol": 100.0, "amount": 1000.0 + i,
+            "adj_factor": 1.0, "suspended": False, "is_st": False,
+            "is_new": False, "board": "main",
+        })
+    market = pd.DataFrame(rows)
+    monkeypatch.setattr(loader, "load_stock_names",
+                        lambda: pd.DataFrame({"ts_code": codes,
+                                              "name": [f"股票{i}" for i in range(25)]}))
+    s = AboveStrategy(threshold=0.0)
+
+    out = selection.run_selection(s, "20240103", market=market)
+
+    assert len(out) == 25
+    assert list(out["rank"]) == list(range(1, 26))
+
+
 def test_compute_signals_uses_prepared_columns():
     s = EnrichStrategy(threshold=23.0)
     signals = selection.compute_signals(s, make_market())

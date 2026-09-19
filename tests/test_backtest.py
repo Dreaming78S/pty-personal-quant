@@ -60,6 +60,18 @@ def base_config(**overrides):
     return BacktestConfig(**cfg)
 
 
+def test_all_signals_bought_equal_weight_when_top_n_none():
+    market = make_market(codes=("600000.SH", "600001.SH"))
+    config = base_config(top_n=None, initial_cash=1_000_000.0)
+
+    result = backtest.run_backtest(AlwaysStrategy(), config, market=market)
+
+    buys = result.trades[result.trades["side"] == "buy"]
+    assert len(buys) == 2
+    assert set(buys["ts_code"]) == {"600000.SH", "600001.SH"}
+    assert set(buys["shares"]) == {50000}
+
+
 def test_rebalance_dates_weekly_and_monthly():
     dates = ["20240101", "20240102", "20240103", "20240104", "20240105",
              "20240108", "20240109", "20240201", "20240202"]

@@ -31,9 +31,10 @@ def _patch_select(monkeypatch, captured):
     monkeypatch.setattr("quant.engine.loader.load_market_data",
                         lambda **kwargs: pd.DataFrame({"dummy": [1]}))
 
-    def fake_run_selection(strategy, trade_date, top_n=20, market=None,
+    def fake_run_selection(strategy, trade_date, top_n=None, market=None,
                            filters=None, rank_by="amount"):
         captured["filters"] = filters
+        captured["top_n"] = top_n
         return pd.DataFrame({"rank": [1], "ts_code": ["600000.SH"],
                              "name": ["浦发银行"]})
 
@@ -67,6 +68,22 @@ def test_select_boards_accepts_comma_list(monkeypatch):
                                  "--boards", "main,gem"])
     assert result.exit_code == 0
     assert captured["filters"].allowed_boards == ("main", "gem")
+
+
+def test_select_defaults_to_all_hits(monkeypatch):
+    captured = {}
+    _patch_select(monkeypatch, captured)
+    result = runner.invoke(app, ["select", "-s", "ma_volume"])
+    assert result.exit_code == 0
+    assert captured["top_n"] is None
+
+
+def test_select_top_option_limits_output(monkeypatch):
+    captured = {}
+    _patch_select(monkeypatch, captured)
+    result = runner.invoke(app, ["select", "-s", "ma_volume", "-n", "5"])
+    assert result.exit_code == 0
+    assert captured["top_n"] == 5
 
 
 def test_select_boards_rejects_unknown_token(monkeypatch):

@@ -1,6 +1,6 @@
 initial_cash: 1000000
 rebalance: weekly
-top_n: 10
+# top_n 留空 = 等权买入当日全部信号股；填数字则限制持仓数量
 rank_by: amount
 execution: next_open
 benchmark: "000300.SH"

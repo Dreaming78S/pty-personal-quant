@@ -15,9 +15,10 @@
 uv run quant data status                         # 查看各表行数/水位线/缓存状态
 uv run quant data update -t daily --from-date 2024-01-02 --to-date 2024-01-31
 uv run quant list                                # 已注册策略
-uv run quant select -s ma_volume -n 20           # 选股（默认最新交易日、默认只选主板）
+uv run quant select -s ma_volume                 # 选股（默认最新交易日、只选主板、输出全部命中）
+uv run quant select -s ma_volume -n 50           # 只输出前 50 只
 uv run quant select -s ma_volume --boards all    # 不限板块（main,gem,star,bse 可逗号组合）
-uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17
+uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17   # 默认等权买入全部信号股
 ```
 
 ## 数据表
@@ -69,13 +70,14 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 | `rps_breakout` | 120 日 RPS≥90 且接近 120 日高点 | RPS |
 
 - `configs/strategies/<策略名>.yaml`：策略参数（CLI 会自动读取同名文件）
-- `configs/backtest/default.yaml`：回测默认参数（费用、调仓、持仓数、股票池过滤等）
+- `configs/backtest/default.yaml`：回测默认参数（费用、调仓、持仓数、股票池过滤等）；`top_n` 留空 = 等权买入当日全部信号股，填数字（或 `-n`，`0` 表示全部）则限制持仓数量
 - 新增策略：在 `src/quant/strategies/` 新建文件，用 `@register_strategy("名称")` 装饰类并实现 `generate_signals`
 - 因果约定（重要）：`generate_signals` 收到的是该股票整段已加载历史（含信号日之后的行情），策略必须只使用每行 `trade_date` 及之前的数据，禁止负向 `shift`、全序列归一化、反向窗口等引用未来行情的写法
 
 ## 回测约定（重要）
 
 - 信号在调仓日收盘产生，次日开盘成交；涨停买不进、跌停卖不掉顺延、T+1、整手规则均已实现
+- 默认等权买入当日全部信号股（每只目标金额 = 总权益 / 信号数量），可用 `configs/backtest/default.yaml` 的 `top_n` 或 `-n` 限制持仓数量
 - 成交与估值使用后复权价，等效分红再投资；涨跌停/停牌判定使用原始价
 - 回测基准由 `configs/backtest/default.yaml` 的 `benchmark:` 配置，默认 `000300.SH`（沪深300）；`index_daily` 已入库的 8 个指数均可切换为基准
 - 输出：`outputs/backtest/<策略>_<时间戳>/`（equity.csv / trades.csv / metrics.json / equity.png）

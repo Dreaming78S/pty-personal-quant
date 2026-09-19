@@ -81,3 +81,40 @@ def test_backtest_command_builds_fee_config_from_yaml(monkeypatch):
 
     assert result.exit_code == 0
     assert isinstance(captured["config"].fees, FeeConfig)
+
+
+def test_backtest_top_option_zero_means_all(monkeypatch):
+    equity = pd.DataFrame({"trade_date": ["20240102"], "equity": [100.0],
+                           "cash": [0.0], "benchmark": [100.0]})
+    captured = {}
+
+    monkeypatch.setattr("quant.engine.loader.load_market_data",
+                        lambda *a, **k: pd.DataFrame({"dummy": [1]}))
+    monkeypatch.setattr("quant.engine.loader.load_benchmark",
+                        lambda *a, **k: pd.Series(dtype=float))
+
+    def fake_run(strategy, config, **kwargs):
+        captured["config"] = config
+        return BacktestResult(equity=equity, trades=pd.DataFrame(),
+                              config=config, strategy_name="ma_volume")
+
+    monkeypatch.setattr("quant.engine.backtest.run_backtest", fake_run)
+    monkeypatch.setattr("quant.engine.report.save_backtest",
+                        lambda *a, **k: "outputs/backtest/fake")
+
+    result = runner.invoke(app, ["backtest", "-s", "ma_volume",
+                                 "--start", "2024-01-02", "--end", "2024-01-03"])
+    assert result.exit_code == 0
+    assert captured["config"].top_n is None
+
+    result = runner.invoke(app, ["backtest", "-s", "ma_volume",
+                                 "--start", "2024-01-02", "--end", "2024-01-03",
+                                 "-n", "0"])
+    assert result.exit_code == 0
+    assert captured["config"].top_n is None
+
+    result = runner.invoke(app, ["backtest", "-s", "ma_volume",
+                                 "--start", "2024-01-02", "--end", "2024-01-03",
+                                 "-n", "3"])
+    assert result.exit_code == 0
+    assert captured["config"].top_n == 3

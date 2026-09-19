@@ -115,7 +115,7 @@ def _parse_boards(value: str) -> tuple[str, ...] | None:
 def select(
     strategy: str = typer.Option(..., "--strategy", "-s", help="策略名"),
     date: str = typer.Option(None, "--date", "-d", help="交易日，缺省最新；非交易日自动回退"),
-    top: int = typer.Option(20, "--top", "-n", help="输出数量"),
+    top: int = typer.Option(0, "--top", "-n", help="输出数量，0 表示全部命中"),
     rank_by: str = typer.Option("amount", "--rank-by", help="排序字段"),
     boards: str = typer.Option("main", "--boards",
                                help="板块过滤，逗号分隔 main/gem/star/bse；all 表示不限"),
@@ -141,7 +141,7 @@ def select(
     market = loader.load_market_data(
         start=target, end=target, warmup_days=strat.warmup_days)
     result = selection.run_selection(
-        strat, target, top_n=top, market=market,
+        strat, target, top_n=top if top > 0 else None, market=market,
         filters=loader.UniverseFilters(allowed_boards=_parse_boards(boards)),
         rank_by=rank_by)
     typer.echo(result.to_string(index=False))
@@ -156,7 +156,8 @@ def backtest_cmd(
     end: str = typer.Option(..., "--end", help="结束日期"),
     config: str = typer.Option("configs/backtest/default.yaml", "--config",
                                help="回测参数 YAML"),
-    top: int = typer.Option(None, "--top", "-n", help="持仓数量，覆盖配置"),
+    top: int = typer.Option(None, "--top", "-n",
+                            help="持仓数量，0 表示全部信号股（覆盖配置）"),
 ) -> None:
     """按策略回测并生成报告。"""
     from pathlib import Path
@@ -186,7 +187,7 @@ def backtest_cmd(
         raw = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
     raw.update(start=start_date, end=end_date, warmup_days=strat.warmup_days)
     if top is not None:
-        raw["top_n"] = top
+        raw["top_n"] = top if top > 0 else None
     if isinstance(raw.get("fees"), dict):
         raw["fees"] = FeeConfig(**raw["fees"])
     backtest_config = bt.BacktestConfig(**raw)

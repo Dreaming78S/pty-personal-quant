@@ -28,10 +28,11 @@ def compute_signals(strategy: Strategy, market: pd.DataFrame,
     return pd.concat(frames, ignore_index=True)
 
 
-def run_selection(strategy: Strategy, trade_date: str, top_n: int = 20,
+def run_selection(strategy: Strategy, trade_date: str, top_n: int | None = None,
                   market: pd.DataFrame | None = None,
                   filters: UniverseFilters | None = None,
                   rank_by: str = "amount") -> pd.DataFrame:
+    """按策略选股；top_n 为 None/0 时返回全部命中（按 score 降序）。"""
     filters = filters or UniverseFilters()
     if market is None:
         market = loader.load_market_data(
@@ -44,7 +45,10 @@ def run_selection(strategy: Strategy, trade_date: str, top_n: int = 20,
     eligible = loader.apply_universe(today, filters)
     candidates = signals[(signals["trade_date"] == trade_date) & signals["signal"]]
     merged = eligible.merge(candidates[["ts_code", "score"]], on="ts_code", how="inner")
-    merged = merged.sort_values("score", ascending=False).head(top_n).reset_index(drop=True)
+    merged = merged.sort_values("score", ascending=False)
+    if top_n:
+        merged = merged.head(top_n)
+    merged = merged.reset_index(drop=True)
     merged.insert(0, "rank", merged.index + 1)
     names = loader.load_stock_names()
     merged = merged.merge(names, on="ts_code", how="left")
