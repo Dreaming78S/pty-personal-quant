@@ -81,8 +81,56 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 
 - `configs/strategies/<策略名>.yaml`：策略参数（CLI 会自动读取同名文件）
 - `configs/backtest/default.yaml`：回测默认参数（费用、调仓、持仓数、股票池过滤等）；`top_n` 留空 = 等权买入当日全部信号股，填数字（或 `-n`，`0` 表示全部）则限制持仓数量
-- 新增策略：在 `src/quant/strategies/` 新建文件，用 `@register_strategy("名称")` 装饰类并实现 `generate_signals`
+- 新增/修改/删除策略：见下方「策略变更标准操作流程」
 - 因果约定（重要）：`generate_signals` 收到的是该股票整段已加载历史（含信号日之后的行情），策略必须只使用每行 `trade_date` 及之前的数据，禁止负向 `shift`、全序列归一化、反向窗口等引用未来行情的写法
+
+## 策略变更标准操作流程
+
+策略的派生数据只有一张表：`hit_<策略>`（`select`/`backtest`/报告均为运行时现算，无需重建）。以下操作全部幂等、可重跑。
+
+### 新增策略
+
+1. 新建 `src/quant/strategies/<名称>.py`：`@register_strategy("<名称>")` + `Params(BaseModel)` + `warmup_days` + `generate_signals(bars)`（需要横截面数据时实现 `prepare(market)`），可参考 `ma_volume.py`；策略文件会被自动扫描注册，无需改注册代码
+2. 新建 `configs/strategies/<名称>.yaml`（`strategy` + `params`，字段与 `Params` 一致）
+3. `src/quant/data/schemas.py`：把名称加入 `HIT_STRATEGIES`（`HIT_TABLES` 自动派生；顺序影响 `-s all` 与报告中的排列）
+4. `tests/test_schemas.py` 的策略元组断言同步；新增 `tests/test_strategy_<名称>.py`；README 策略表加一行
+5. 建表并回填历史：
+
+   ```bash
+   uv run quant data init-db                                  # 创建 hit_<名称>（幂等）
+   uv run quant hits update -s <名称> --from-date 2024-01-01  # 全历史回填；只想从某天开始就改成该日期
+   ```
+
+6. 验证：`uv run quant list`、`uv run quant select -s <名称>`、`uv run quant data status`
+
+### 修改策略
+
+- 只改参数：编辑 `configs/strategies/<名称>.yaml`
+- 改逻辑：编辑 `src/quant/strategies/<名称>.py`，先过 `uv run pytest tests/test_strategy_<名称>.py -q`
+- 重算命中表（**必须显式传 `--from-date`**，否则只从水位线增量追加、旧口径数据残留）：
+
+  ```bash
+  uv run quant hits update -s <名称> --from-date 2024-01-01
+  ```
+
+- 重算会先删除区间旧行；想保留旧口径结果做对比，先备份：`CREATE TABLE hit_<名称>_bak AS SELECT * FROM hit_<名称>;`
+- 重算后可复核：用交易日历重算历史列自洽性，并与 `uv run quant select -s <名称>` 当日结果逐代码比对；依赖命中表的报告/回测按需重跑
+- 改了 `Params` 字段需同步 yaml；`warmup_days` 变化无需特殊处理（命中计算总是加载完整历史面板）
+
+### 删除策略
+
+1. 删 `src/quant/strategies/<名称>.py`、`configs/strategies/<名称>.yaml`、`tests/test_strategy_<名称>.py`
+2. `src/quant/data/schemas.py` 的 `HIT_STRATEGIES` 移除该名（否则下次 `data init-db` 会把表建回来）；`tests/test_schemas.py` 元组断言同步；README 策略表删行
+3. 数据库清理：
+
+   ```sql
+   DROP TABLE `hit_<名称>`;
+   DELETE FROM ingest_log WHERE task_name = 'hit_<名称>';
+   ```
+
+4. 验证：`uv run quant data status` 不再出现该表、`uv run quant list` 不再列出、`uv run pytest -q` 通过
+
+> 表删除后数据不可恢复，想留档先备份：`CREATE TABLE hit_<名称>_bak AS SELECT * FROM hit_<名称>;`
 
 ## 回测约定（重要）
 
