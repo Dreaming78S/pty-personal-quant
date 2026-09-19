@@ -82,6 +82,12 @@ def patch_deps(monkeypatch, watermark=None, dates=("20240103", "20240104"),
                             "industry": ["银行", "钢铁", "电气", "地产"]}))
     monkeypatch.setattr(hits.loader, "resolve_trade_date", lambda date=None: latest)
     monkeypatch.setattr(hits.loader, "history_warmup_days", lambda start: 123)
+    monkeypatch.setattr(hits.loader, "open_trade_dates",
+                        lambda: ["20240101", "20240102", "20240103",
+                                 "20240104", "20240105"])
+    monkeypatch.setattr(hits.db, "read_df",
+                        lambda sql, params=None: pd.DataFrame(
+                            {"ts_code": [], "trade_date": []}))
     return captured
 
 
@@ -174,6 +180,24 @@ def test_fill_hits_history_columns(monkeypatch):
     assert second["prev_hit"] == 1
     assert second["hit_3d"] == 1 and second["hit_5d"] == 1 and second["hit_10d"] == 1
     assert second["streak"] == 2
+
+
+def test_fill_hits_history_counts_existing_table_rows(monkeypatch):
+    captured = patch_deps(monkeypatch)
+    monkeypatch.setattr(hits.db, "read_df",
+                        lambda sql, params=None: pd.DataFrame({
+                            "ts_code": ["600000.SH"],
+                            "trade_date": ["20240102"]}))
+
+    hits.fill_hits("hits_dummy", from_date="20240103", to_date="20240104")
+
+    _, df, _ = captured["upserts"][0]
+    first = df[(df["ts_code"] == "600000.SH") & (df["trade_date"] == "20240103")].iloc[0]
+    assert first["prev_hit"] == 1
+    assert first["hit_3d"] == 1 and first["hit_10d"] == 1
+    assert first["streak"] == 2
+    second = df[(df["ts_code"] == "600000.SH") & (df["trade_date"] == "20240104")].iloc[0]
+    assert second["hit_3d"] == 2 and second["streak"] == 3
 
 
 def test_fill_hits_loads_full_history_panel(monkeypatch):

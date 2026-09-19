@@ -3,7 +3,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from quant.data import db, ingest, schemas
@@ -59,37 +58,38 @@ def _hit_detail(strategy, market: pd.DataFrame) -> pd.DataFrame:
     return merged
 
 
-def _attach_history(latest: pd.DataFrame, detail: pd.DataFrame,
-                    rank_of: dict[str, int], codes: pd.Index) -> pd.DataFrame:
-    """按真实交易日历回看（停牌日占窗口位置，不含当日），注入历史命中列。"""
-    n_dates = len(rank_of)
-    indicator = np.zeros((n_dates, len(codes)), dtype="int64")
-    if not detail.empty:
-        rows = detail["trade_date"].map(rank_of).to_numpy()
-        cols = pd.Categorical(detail["ts_code"], categories=codes).codes
-        indicator[rows, cols] = 1
+def _attach_history(latest: pd.DataFrame, keys: set[tuple[str, str]],
+                    rank_of: dict[str, int]) -> pd.DataFrame:
+    """按真实交易日历回看（停牌日占窗口位置，不含当日），注入历史命中列。
 
-    prev = np.zeros_like(indicator)
-    prev[1:] = indicator[:-1]
-    cum = np.cumsum(prev, axis=0)
+    统计口径是"表内已记录的命中"（keys = 数据库现有行 ∪ 本次写入行），
+    因此每一行都能用表自身复核，且与计算面板的长短无关。
+    """
+    by_code: dict[str, set[int]] = {}
+    for code, d in keys:
+        by_code.setdefault(code, set()).add(rank_of[d])
 
-    def window(n: int) -> np.ndarray:
-        out = cum.copy()
-        out[n:] = cum[n:] - cum[:-n]
-        return out
+    prev_hits, hit3, hit5, hit10, streaks = [], [], [], [], []
+    for code, d in zip(latest["ts_code"], latest["trade_date"]):
+        r = rank_of[d]
+        ranks = by_code[code]
+        prev_hits.append(1 if (r - 1) in ranks else 0)
+        hit3.append(sum(1 for k in range(r - 3, r) if k in ranks))
+        hit5.append(sum(1 for k in range(r - 5, r) if k in ranks))
+        hit10.append(sum(1 for k in range(r - 10, r) if k in ranks))
+        run = 0
+        k = r
+        while k in ranks:
+            run += 1
+            k -= 1
+        streaks.append(run)
 
-    idx = np.arange(n_dates)[:, None]
-    last_zero = np.maximum.accumulate(np.where(indicator == 0, idx + 1, 0), axis=0) - 1
-    streak = idx - last_zero
-
-    rows = latest["trade_date"].map(rank_of).to_numpy()
-    cols = pd.Categorical(latest["ts_code"], categories=codes).codes
     latest = latest.copy()
-    latest["prev_hit"] = prev[rows, cols]
-    latest["hit_3d"] = window(3)[rows, cols]
-    latest["hit_5d"] = window(5)[rows, cols]
-    latest["hit_10d"] = window(10)[rows, cols]
-    latest["streak"] = streak[rows, cols]
+    latest["prev_hit"] = prev_hits
+    latest["hit_3d"] = hit3
+    latest["hit_5d"] = hit5
+    latest["hit_10d"] = hit10
+    latest["streak"] = streaks
     return latest
 
 
@@ -122,12 +122,7 @@ def fill_hits(strategy: str = "all", from_date: str | None = None,
             warmup_days=loader.history_warmup_days(min(bounds)))
         market["trade_date"] = market["trade_date"].astype(str)
 
-    rank_of: dict[str, int] = {}
-    codes = pd.Index([], dtype=object)
-    if market is not None and not market.empty:
-        rank_of = {d: i for i, d in
-                   enumerate(sorted(market["trade_date"].unique()))}
-        codes = pd.Index(sorted(market["ts_code"].unique()))
+    rank_of = {d: i for i, d in enumerate(loader.open_trade_dates())}
 
     results: dict[str, int] = {}
     for name, strat, watermark, dates in plans:
@@ -138,10 +133,18 @@ def fill_hits(strategy: str = "all", from_date: str | None = None,
         latest = (detail[detail["trade_date"].isin(dates)].copy()
                   if not detail.empty else detail)
         if not latest.empty:
+            table = schemas.hit_table_name(name)
+            existing = db.read_df(
+                f"SELECT ts_code, trade_date FROM `{table}`")
+            keys = set(zip(existing["ts_code"].astype(str),
+                           existing["trade_date"].astype(str))) if not existing.empty else set()
+            if from_date:
+                keys = {k for k in keys if not (dates[0] <= k[1] <= dates[-1])}
+            keys |= set(zip(latest["ts_code"], latest["trade_date"]))
             latest["params"] = json.dumps(strat.p.model_dump(),
                                           ensure_ascii=False, sort_keys=True,
                                           default=str)
-            latest = _attach_history(latest, detail, rank_of, codes)
+            latest = _attach_history(latest, keys, rank_of)
             latest = latest[list(schemas.HIT_COLUMNS)]
         written = 0
         if from_date:

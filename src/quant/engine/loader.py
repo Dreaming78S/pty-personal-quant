@@ -155,6 +155,12 @@ def resolve_trade_date(date: str | None = None) -> str:
     return candidates[-1]
 
 
+def open_trade_dates() -> list[str]:
+    trade_cal = cache.load_table("trade_cal")
+    _, open_dates = _date_ranks(trade_cal)
+    return open_dates
+
+
 def history_warmup_days(start: str) -> int:
     """start 之前的可用交易日数量；用作加载完整历史的暖机参数。
 
