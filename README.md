@@ -5,7 +5,7 @@
 ## 环境准备
 
 1. 安装 [uv](https://docs.astral.sh/uv/)，执行 `uv sync`
-2. 复制 `.env.example` 为 `.env`，填入阿里云 RDS 与 Tushare token
+2. 复制 `.env.example` 为 `.env`，填入阿里云 RDS 与 Tushare token（飞书通知可选：填 `feishu_webhook_url`，机器人开启签名校验再加 `feishu_webhook_secret`，见「飞书通知」）
 3. `uv run quant data init-db` 建表
 4. `uv run quant data update` 首次全量入库（缺省按交易日历增量，可中断续跑）
 
@@ -20,9 +20,21 @@ uv run quant select -s ma_volume -n 50           # 只输出前 50 只
 uv run quant select -s ma_volume --boards all    # 不限板块（main,gem,star,bse 可逗号组合）
 uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17   # 默认等权买入全部信号股
 uv run quant hits update -s all                  # 回填/增量写入 hit_<策略> 历史命中表
-uv run quant notify                              # 飞书推送各策略当日命中清单（每策略一条）
+uv run quant notify                              # 飞书推送当日卡片（7 策略 + 同日共振 + 5日复合共振）
 uv run quant notify -s ma_volume --dry-run       # 只打印不发送，先预览
 ```
+
+## 交易日盘后流程
+
+```bash
+uv run quant data update     # 1. 行情增量入库（建议交易日 18:00 后执行）
+uv run quant hits update     # 2. 各策略命中表增量写入（可 -s 指定策略）
+uv run quant data status     # 3. 校验各 hit_<策略> 水位线已追平最新交易日
+uv run quant notify          # 4. 飞书推送当日卡片（可选）
+```
+
+- 更新与推送彼此独立：`notify` 只读命中表；推送已入库的历史日期用 `-d`，无需先跑数据更新；推送前可用 `--dry-run` 预览
+- 本地 `scripts/daily_update.py` 一键执行前 3 步（等价命令；`scripts/` 未纳入版本管理）
 
 ## 策略历史命中（hit_&lt;策略&gt;）
 
@@ -36,10 +48,11 @@ uv run quant notify -s ma_volume --dry-run       # 只打印不发送，先预�
 ## 飞书通知
 
 - 在 `.env` 配置自定义机器人 webhook：`feishu_webhook_url`（必填）；机器人开启"签名校验"时再加 `feishu_webhook_secret`（可选，自动加签）
-- `uv run quant notify`：读取各 `hit_<策略>` 表当日记录，每策略一条交互卡片推送飞书群（无命中也会发"今日无命中"，卡片头置灰）；`-s` 选策略（默认全部）、`-d` 指定交易日（默认最新）、`--dry-run` 只打印不发送、`--no-co` 跳过共振卡片
+- `uv run quant notify`：读取各 `hit_<策略>` 表当日记录，每策略一条交互卡片推送飞书群（无命中也会发"今日无命中"，卡片头置灰）；`-s` 选策略（默认全部）、`-d` 指定交易日（默认最新）、`--dry-run` 只打印不发送、`--no-co` 跳过两张共振类卡片
 - 附带的「多策略共振」卡片：当日被 ≥2 个策略命中的股票（始终按全部已注册策略统计），按策略数降序、成交额降序，每行附命中策略，橙色卡片头
+- 附带的「5日复合共振（当日含 rise_shrink_pullback）」卡片：当日命中 `rise_shrink_pullback`、且近 5 个交易日（含当日）命中过其他策略的股票，按其他策略数降序、成交额降序，行内列出策略名与命中日期（如 `rps_breakout(09-15、09-16)`），紫色卡片头
 - 命中表未追平目标日期时报错并提示先执行 `quant hits update`，不会把"未更新"误报成"无命中"；单条发送失败不阻断其余策略（网络类错误自动重试 2 次、间隔 1 秒），有失败时退出码为 1
-- 卡片内容：标题为策略名+日期+命中数，正文按 rank 排序，每行「序号、名称（加粗）、不复权收盘价、行业」
+- 策略卡片内容：标题为策略名+日期+命中数，正文按 rank 排序，每行「序号、名称（加粗）、不复权收盘价、行业」
 
 ## 数据表
 
@@ -73,6 +86,7 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 - 日期参数、`--rate` 与 Tushare 客户端在清空之前校验/构造，参数写错不会清库
 - 不传 `--yes` 时会列出将被清空的表并要求输入 `YES` 确认；`--all-tables` 会清空当前库全部基础表（含非本系统表），请谨慎使用
 - `--skip-truncate` 不清空，按 `ingest_log` 水位线只补未入库的日期（没有水位线的表从起始日期拉取），快照表仍整体刷新，可安全重跑续传
+- 脚本位于本地 `scripts/` 目录（未纳入版本管理），按需本地维护
 - 预计耗时约 2 小时（行情约 1.2 万次调用、150 次/分钟；股东增减持按自然日抓取、90 次/分钟）
 - 全量数据需预留数 GB MySQL 存储空间，请确认实例容量后再执行
 
@@ -88,11 +102,12 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 | `limit_up_shakeout` | 昨日涨停、今日放量收阴不破昨收 | 成交额 |
 | `uptrend_limit_down` | 上升趋势中放量跌停（错杀） | 成交额 |
 | `rps_breakout` | 120 日 RPS≥90 且接近 120 日高点 | RPS |
-| `rise_shrink_pullback` | 近 10 日涨超 25% 后缩量阴线回调 | 成交额 |
+| `rise_shrink_pullback` | 近 10 日涨超 20% 后缩量阴线回调 | 成交额 |
 
 - `configs/strategies/<策略名>.yaml`：策略参数（CLI 会自动读取同名文件）
+- `uv run quant list` 展示的是代码默认参数；实际生效值以 `configs/strategies/<策略名>.yaml` 为准
 - `configs/backtest/default.yaml`：回测默认参数（费用、调仓、持仓数、股票池过滤等）；`top_n` 留空 = 等权买入当日全部信号股，填数字（或 `-n`，`0` 表示全部）则限制持仓数量
-- 新增/修改/删除策略：见下方「策略变更标准操作流程」
+- 新增/修改/暂时禁用/删除策略：见下方「策略变更标准操作流程」
 - 因果约定（重要）：`generate_signals` 收到的是该股票整段已加载历史（含信号日之后的行情），策略必须只使用每行 `trade_date` 及之前的数据，禁止负向 `shift`、全序列归一化、反向窗口等引用未来行情的写法
 
 ## 策略变更标准操作流程
@@ -134,9 +149,9 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 
 1. 策略文件改名：`src/quant/strategies/<名称>.py` → `_<名称>.py`（下划线开头会被自动发现跳过，策略即从 `quant list`、`hits update -s all` 中消失）
 2. 测试文件同步改名：`tests/test_strategy_<名称>.py` → `_test_strategy_<名称>.py`（pytest 不收集下划线开头的文件，避免因策略未注册而失败）
-3. `src/quant/data/schemas.py` 的 `HIT_STRATEGIES` 移除该名；`tests/test_schemas.py` 元组断言同步——共振报告、通用回测、盘后一键脚本随即不再包含该策略
+3. `src/quant/data/schemas.py` 的 `HIT_STRATEGIES` 移除该名；`tests/test_schemas.py` 元组断言同步——共振报告、通用回测、本地 `scripts/daily_update.py` 随即不再包含该策略
 4. 以下内容都不要动：`configs/strategies/<名称>.yaml`、数据库表 `hit_<名称>`、`ingest_log` 中 `hit_<名称>` 的水位线
-5. 验证：`uv run quant list` 不再出现、`uv run pytest -q` 通过；盘后一键脚本不会把该表误报为"未追平"
+5. 验证：`uv run quant list` 不再出现、`uv run pytest -q` 通过；本地 `scripts/daily_update.py` 不会把该表误报为"未追平"
 6. 恢复启用：文件改回原名、名字加回 `HIT_STRATEGIES`（测试同步），然后从旧水位线自动补齐禁用期间缺失的数据：
 
    ```bash
@@ -167,7 +182,13 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 - 成交与估值使用后复权价，等效分红再投资；涨跌停/停牌判定使用原始价
 - 后复权价 = 原始价 × Tushare `adj_factor`（以数据起点为基准、逐次含分红送转）；不同软件的后复权绝对值因基准与事件口径不同可能不同，跨平台比较请用涨跌幅/区间收益率
 - 回测基准由 `configs/backtest/default.yaml` 的 `benchmark:` 配置，默认 `000300.SH`（沪深300）；`index_daily` 已入库的 8 个指数均可切换为基准
-- 输出：`outputs/backtest/<策略>_<时间戳>/`（equity.csv / trades.csv / metrics.json / equity.png）
+
+## 输出位置
+
+- `outputs/select/<日期>_<策略>.csv`：`quant select` 选股结果
+- `outputs/backtest/<策略>_<时间戳>/`：回测权益 `equity.csv`、成交 `trades.csv`、指标 `metrics.json` 与净值图 `equity.png`
+- `outputs/reports/`：命中表现、共振拆分、通用命中回测等报告与明细（由本地 `scripts/` 下脚本生成）
+- 本地 Parquet 缓存 `data_cache/`、日志 `logs/`；`outputs/`、`data_cache/`、`logs/`、`scripts/` 均已 gitignore
 
 ## 测试
 
