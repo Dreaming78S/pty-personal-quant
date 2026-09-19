@@ -124,6 +124,11 @@ def main() -> None:
         _summary(f"{name}（参与共振）", group)
         for name, group in combined.groupby("strategies")
     ]).sort_values("可计算", ascending=False).reset_index(drop=True)
+    by_prev = pd.DataFrame([
+        _summary("前一日无命中（0 个策略）" if n == 0 else "前一日仅 1 个策略命中",
+                 forward[forward["prev_n"] == n])
+        for n in (0, 1)
+    ]) if args.new_only else None
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -159,8 +164,10 @@ def main() -> None:
         "括号内百分比 = 占可计算次数",
         "",
     ]
-    sections = [
-        ("## 总览", overall),
+    sections = [("## 总览", overall)]
+    if args.new_only:
+        sections.append(("## 按前一日命中情况（首次共振内部对比）", by_prev))
+    sections += [
         ("## 按共振策略数", by_size),
         ("## 按策略组合（按事件数降序）", by_combo),
         ("## 按策略参与（一个事件计入其全部成员策略，合计会大于总览）", by_strategy),

@@ -108,10 +108,12 @@ def test_co_hit_starts_keeps_only_first_day_of_episode():
     starts = hit_performance.co_hit_starts(hits, dates)
 
     assert list(starts.columns) == ["ts_code", "trade_date",
-                                    "strategies", "n_strategies"]
+                                    "strategies", "n_strategies", "prev_n"]
     assert list(starts["ts_code"]) == ["600000.SH", "600002.SH", "600003.SH"]
     assert list(starts["trade_date"]) == ["20260106", "20260106", "20260107"]
     assert list(starts["n_strategies"]) == [2, 2, 2]
+    # prev_n：600000 前一日 1 个策略、600002 前一日无命中、600003 前一日 1 个策略
+    assert list(starts["prev_n"]) == [1, 0, 1]
     # 600000 在 0107 前一日已共振（2 个策略）→ 不算首次
     # 600004 位于日历首日，前一日无从判断 → 剔除
     assert list(hit_performance.co_hit_starts(hits, dates, min_strategies=3)

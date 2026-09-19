@@ -72,7 +72,8 @@ def co_hit_starts(hits: pd.DataFrame, trade_dates, min_strategies: int = 2) -> p
     命中的策略数 ≤1（0 或 1 个，含未命中与停牌）。
 
     hits 需含 strategy/ts_code/trade_date 列；trade_dates 为交易日历（YYYYMMDD）。
-    前一日未知（T 为日历首日）时剔除。返回列同 group_co_hits。
+    前一日未知（T 为日历首日）时剔除。返回列同 group_co_hits，另加 prev_n
+    （前一交易日命中的策略数，0 或 1）。
     """
     hits = hits.copy()
     hits["trade_date"] = hits["trade_date"].astype(str)
@@ -90,9 +91,9 @@ def co_hit_starts(hits: pd.DataFrame, trade_dates, min_strategies: int = 2) -> p
     known = events["prev_date"].notna()
     events.loc[known, "prev_n"] = events.loc[known, "prev_n"].fillna(0)
 
-    return (events[events["prev_n"] <= 1]
-            [["ts_code", "trade_date", "strategies", "n_strategies"]]
-            .reset_index(drop=True))
+    result = events[events["prev_n"] <= 1].reset_index(drop=True)
+    result["prev_n"] = result["prev_n"].astype(int)
+    return result[["ts_code", "trade_date", "strategies", "n_strategies", "prev_n"]]
 
 
 def group_co_hits(hits: pd.DataFrame, min_strategies: int = 2) -> pd.DataFrame:
