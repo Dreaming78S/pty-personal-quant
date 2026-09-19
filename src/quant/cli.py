@@ -103,6 +103,38 @@ def hits_update(
         typer.echo(f"hit_{name}: 已写入 {rows} 行")
 
 
+@app.command("notify")
+def notify_cmd(
+    strategy: str = typer.Option("all", "--strategy", "-s",
+                                 help="all、策略名或逗号组合"),
+    date: str = typer.Option(None, "--date", "-d",
+                             help="交易日，缺省最新；非交易日自动回退"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="只打印消息不发送"),
+    co: bool = typer.Option(True, "--co/--no-co",
+                            help="是否附带多策略共振卡片"),
+) -> None:
+    """将各策略当日命中清单与多策略共振推送飞书群（每策略一张卡片）。"""
+    from quant.engine import notify
+    from quant.utils.dates import to_yyyymmdd
+    from quant.utils.logging import setup_logging
+
+    setup_logging()
+    target = to_yyyymmdd(date) if date else None
+    if dry_run:
+        messages = notify.build_messages(strategy, target, include_co=co)
+        for name, message in messages.items():
+            typer.echo(f"----- {name} -----")
+            typer.echo(notify.render_text(message))
+        return
+    results = notify.notify_hits(strategy, target, include_co=co)
+    failed = False
+    for name, status in results.items():
+        typer.echo(f"{name}: {status}")
+        failed = failed or status.startswith("失败")
+    if failed:
+        raise typer.Exit(code=1)
+
+
 @app.command("list")
 def list_strategies_cmd() -> None:
     """列出已注册策略及其默认参数。"""

@@ -16,6 +16,8 @@ class Settings(BaseSettings):
     aliyun_rds_passport: str
     aliyun_rds_database: str
     tushare_token: str
+    feishu_webhook_url: str | None = None
+    feishu_webhook_secret: str | None = None
 
 
 @lru_cache(maxsize=1)

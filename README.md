@@ -20,6 +20,8 @@ uv run quant select -s ma_volume -n 50           # 只输出前 50 只
 uv run quant select -s ma_volume --boards all    # 不限板块（main,gem,star,bse 可逗号组合）
 uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17   # 默认等权买入全部信号股
 uv run quant hits update -s all                  # 回填/增量写入 hit_<策略> 历史命中表
+uv run quant notify                              # 飞书推送各策略当日命中清单（每策略一条）
+uv run quant notify -s ma_volume --dry-run       # 只打印不发送，先预览
 ```
 
 ## 策略历史命中（hit_&lt;策略&gt;）
@@ -30,6 +32,14 @@ uv run quant hits update -s all                  # 回填/增量写入 hit_<策�
 - 字段：`industry`（行业快照）、`prev_hit`（同策略上一交易日是否命中）、`hit_3d/hit_5d/hit_10d`（同策略前 3/5/10 个交易日命中天数，不含当日、停牌日占窗口）、`streak`（同策略连续命中天数，含当日）
 - 历史列只统计**表内已记录的命中**（即 2024-01-02 起），每行都可用表自身复核；命中计算加载完整历史面板，结果与水位线、重跑次数无关（单日 `select` 对暖机期内长期停牌股可能略有差异）
 - 命中表是派生数据：不参与 Tushare 抓取、本地 Parquet 缓存与夜间全量重建清空；`quant data status` 可查看行数与水位线
+
+## 飞书通知
+
+- 在 `.env` 配置自定义机器人 webhook：`feishu_webhook_url`（必填）；机器人开启"签名校验"时再加 `feishu_webhook_secret`（可选，自动加签）
+- `uv run quant notify`：读取各 `hit_<策略>` 表当日记录，每策略一条交互卡片推送飞书群（无命中也会发"今日无命中"，卡片头置灰）；`-s` 选策略（默认全部）、`-d` 指定交易日（默认最新）、`--dry-run` 只打印不发送、`--no-co` 跳过共振卡片
+- 附带的「多策略共振」卡片：当日被 ≥2 个策略命中的股票（始终按全部已注册策略统计），按策略数降序、成交额降序，每行附命中策略，橙色卡片头
+- 命中表未追平目标日期时报错并提示先执行 `quant hits update`，不会把"未更新"误报成"无命中"；单条发送失败不阻断其余策略（网络类错误自动重试 2 次、间隔 1 秒），有失败时退出码为 1
+- 卡片内容：标题为策略名+日期+命中数，正文按 rank 排序，每行「序号、名称（加粗）、不复权收盘价、行业」
 
 ## 数据表
 
