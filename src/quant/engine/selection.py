@@ -9,6 +9,7 @@ from quant.strategies.base import Strategy
 
 def compute_signals(strategy: Strategy, market: pd.DataFrame,
                     rank_by: str = "amount") -> pd.DataFrame:
+    market = strategy.prepare(market)
     frames = []
     for ts_code, group in market.groupby("ts_code", sort=False):
         group = group.sort_values("trade_date")

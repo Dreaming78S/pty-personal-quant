@@ -1,3 +1,4 @@
+import pandas as pd
 import pytest
 from pydantic import BaseModel
 
@@ -58,3 +59,9 @@ def test_list_command_shows_registered_strategies():
     result = CliRunner().invoke(app, ["list"])
     assert result.exit_code == 0
     assert "dummy" in result.output
+
+
+def test_prepare_default_returns_market_unchanged():
+    market = pd.DataFrame({"ts_code": ["600000.SH"], "trade_date": ["20240102"],
+                           "close": [10.0]})
+    assert DummyStrategy().prepare(market) is market

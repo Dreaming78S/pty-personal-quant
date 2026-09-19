@@ -62,6 +62,14 @@ class Strategy(ABC):
         全序列归一化、反向窗口等任何引用未来行情的写法。
         """
 
+    def prepare(self, market: pd.DataFrame) -> pd.DataFrame:
+        """横截面预计算钩子：可返回追加了因子列的行情面板；默认原样返回。
+
+        实现者必须返回副本（不得修改入参）；同一行只允许使用该行
+        trade_date 及更早的数据，禁止引用未来行。
+        """
+        return market
+
     def rank(self, bars: pd.DataFrame) -> pd.Series | None:
         """信号数超过持仓数时的排序分，默认 None（由引擎按 rank_by 排序）。"""
         return None

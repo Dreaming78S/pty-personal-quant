@@ -18,6 +18,18 @@ class AboveStrategy(Strategy):
         return bars["close"] > self.p.threshold
 
 
+class EnrichStrategy(Strategy):
+    Params = AboveParams
+
+    def prepare(self, market):
+        market = market.copy()
+        market["double_close"] = market["close"] * 2
+        return market
+
+    def generate_signals(self, bars):
+        return bars["double_close"] > self.p.threshold
+
+
 def make_market():
     rows = []
     for i, code in enumerate(["600000.SH", "600001.SH"]):
@@ -91,3 +103,10 @@ def test_run_selection_raises_on_empty_market(monkeypatch):
                         lambda **kwargs: pd.DataFrame())
     with pytest.raises(ValueError, match="没有可用行情"):
         selection.run_selection(s, "20240103", market=None)
+
+
+def test_compute_signals_uses_prepared_columns():
+    s = EnrichStrategy(threshold=23.0)
+    signals = selection.compute_signals(s, make_market())
+    by_code = signals.groupby("ts_code")["signal"].any().to_dict()
+    assert by_code == {"600000.SH": False, "600001.SH": True}
