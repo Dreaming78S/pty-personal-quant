@@ -64,3 +64,16 @@ def bucket_stats(returns: pd.Series) -> dict[str, int]:
 
 def bucket_counts(stats: dict[str, int]) -> dict[str, int]:
     return {name: stats[name] for name in BUCKET_NAMES}
+
+
+def group_co_hits(hits: pd.DataFrame, min_strategies: int = 2) -> pd.DataFrame:
+    """按 (ts_code, trade_date) 聚合命中策略，返回共振事件。
+
+    hits 需含 strategy/ts_code/trade_date 列；返回列：ts_code, trade_date,
+    strategies（按名称排序的元组，同策略去重）、n_strategies。
+    """
+    grouped = (hits.groupby(["ts_code", "trade_date"])["strategy"]
+               .agg(lambda s: tuple(sorted(set(s)))))
+    frame = grouped.reset_index(name="strategies")
+    frame["n_strategies"] = frame["strategies"].map(len)
+    return frame[frame["n_strategies"] >= min_strategies].reset_index(drop=True)

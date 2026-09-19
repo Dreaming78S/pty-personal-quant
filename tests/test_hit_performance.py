@@ -58,6 +58,29 @@ def test_bucket_stats_boundaries():
     assert stats["盈利"] == 4
 
 
+def test_group_co_hits_keeps_only_multi_strategy_events():
+    hits = pd.DataFrame({
+        "strategy": ["ma_volume", "ma_volume", "turtle_trade", "rps_breakout",
+                     "ma_volume", "turtle_trade"],
+        "ts_code": ["600000.SH", "600000.SH", "600000.SH", "600000.SH",
+                    "600002.SH", "600002.SH"],
+        "trade_date": ["20260105", "20260105", "20260105", "20260105",
+                       "20260106", "20260107"],
+    })
+
+    events = hit_performance.group_co_hits(hits)
+
+    assert len(events) == 1
+    row = events.iloc[0]
+    assert row["ts_code"] == "600000.SH"
+    assert row["trade_date"] == "20260105"
+    assert row["strategies"] == ("ma_volume", "rps_breakout", "turtle_trade")
+    assert row["n_strategies"] == 3
+
+    all_events = hit_performance.group_co_hits(hits, min_strategies=1)
+    assert len(all_events) == 3
+
+
 def test_bucket_stats_ignores_nan():
     stats = hit_performance.bucket_stats(pd.Series([1.0, None, 2.0]))
 
