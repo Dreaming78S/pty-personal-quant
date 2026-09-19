@@ -1,0 +1,7 @@
+strategy: uptrend_limit_down
+params:
+  ma_short: 20
+  ma_long: 60
+  limit_pct: 0.095
+  vol_ma: 20
+  vol_ratio: 2.0
