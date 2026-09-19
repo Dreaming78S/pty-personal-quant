@@ -89,6 +89,7 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 - 信号在调仓日收盘产生，次日开盘成交；涨停买不进、跌停卖不掉顺延、T+1、整手规则均已实现
 - 默认等权买入当日全部信号股（每只目标金额 = 总权益 / 信号数量），可用 `configs/backtest/default.yaml` 的 `top_n` 或 `-n` 限制持仓数量
 - 成交与估值使用后复权价，等效分红再投资；涨跌停/停牌判定使用原始价
+- 后复权价 = 原始价 × Tushare `adj_factor`（以数据起点为基准、逐次含分红送转）；不同软件的后复权绝对值因基准与事件口径不同可能不同，跨平台比较请用涨跌幅/区间收益率
 - 回测基准由 `configs/backtest/default.yaml` 的 `benchmark:` 配置，默认 `000300.SH`（沪深300）；`index_daily` 已入库的 8 个指数均可切换为基准
 - 输出：`outputs/backtest/<策略>_<时间戳>/`（equity.csv / trades.csv / metrics.json / equity.png）
 
