@@ -159,6 +159,10 @@ def load_stock_names() -> pd.DataFrame:
     return cache.load_table("stock_basic", columns=["ts_code", "name"])
 
 
+def load_stock_industries() -> pd.DataFrame:
+    return cache.load_table("stock_basic", columns=["ts_code", "industry"])
+
+
 def load_benchmark(ts_code: str, start: str, end: str) -> pd.Series:
     df = cache.load_table("index_daily", columns=["ts_code", "trade_date", "close"],
                           start=start, end=end, ts_codes=[ts_code])

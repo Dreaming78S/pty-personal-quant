@@ -27,6 +27,7 @@ uv run quant hits update -s all                  # 回填/增量写入 hit_<策�
 - `uv run quant hits update -s all` 把每个策略历史上每日全部命中的股票写入对应 `hit_<策略名>` 表；默认从 2024-01-01 回填，水位线存 `ingest_log`，可增量续跑、幂等重跑
 - 显式传 `--from-date` 视为重算：先清空该区间旧命中再重新计算（策略口径调整后用它刷新历史）
 - 口径与 `select` 一致：沪深主板、非ST、上市≥60日、非停牌；`rank` 按 score 降序编号，`score` 为该策略排序分（成交额 / 流通市值 / RPS），`params` 保存当次运行的策略参数快照
+- 字段：`industry`（行业快照）、`prev_hit`（同策略上一交易日是否命中）、`hit_3d/hit_5d/hit_10d`（同策略前 3/5/10 个交易日命中天数，不含当日、停牌日占窗口）、`streak`（同策略连续命中天数，含当日）
 - 命中表是派生数据：不参与 Tushare 抓取、本地 Parquet 缓存与夜间全量重建清空；`quant data status` 可查看行数与水位线
 
 ## 数据表

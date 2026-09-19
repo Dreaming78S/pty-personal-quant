@@ -300,8 +300,19 @@ HIT_STRATEGIES: tuple[str, ...] = (
 )
 
 HIT_COLUMNS: tuple[str, ...] = (
-    "ts_code", "trade_date", "rank", "name", "close", "raw_close",
-    "amount", "score", "params",
+    "ts_code", "trade_date", "rank", "name", "industry", "close",
+    "raw_close", "amount", "score", "prev_hit", "hit_3d", "hit_5d",
+    "hit_10d", "streak", "params",
+)
+
+# 已有 hit 表补齐新列用（按交易日历回看，不含当日；streak 含当日）。
+HIT_ADDED_COLUMNS: tuple[tuple[str, str], ...] = (
+    ("industry", "VARCHAR(32) COMMENT '所属行业(入库时快照)' AFTER `name`"),
+    ("prev_hit", "TINYINT NOT NULL DEFAULT 0 COMMENT '上一交易日同策略是否命中' AFTER `score`"),
+    ("hit_3d", "INT NOT NULL DEFAULT 0 COMMENT '前3个交易日同策略命中天数' AFTER `prev_hit`"),
+    ("hit_5d", "INT NOT NULL DEFAULT 0 COMMENT '前5个交易日同策略命中天数' AFTER `hit_3d`"),
+    ("hit_10d", "INT NOT NULL DEFAULT 0 COMMENT '前10个交易日同策略命中天数' AFTER `hit_5d`"),
+    ("streak", "INT NOT NULL DEFAULT 0 COMMENT '同策略连续命中天数(含当日)' AFTER `hit_10d`"),
 )
 
 
@@ -316,10 +327,16 @@ CREATE TABLE IF NOT EXISTS `{table}` (
   trade_date CHAR(8) NOT NULL COMMENT '信号日期',
   `rank` INT COMMENT '当日命中排名(按score降序)',
   name VARCHAR(32) COMMENT '股票名称(入库时快照)',
+  industry VARCHAR(32) COMMENT '所属行业(入库时快照)',
   close DECIMAL(12,4) COMMENT '后复权收盘价',
   raw_close DECIMAL(12,4) COMMENT '不复权收盘价',
   amount DECIMAL(20,4) COMMENT '成交额(千元)',
   score DECIMAL(20,6) COMMENT '排序分(该策略口径)',
+  prev_hit TINYINT NOT NULL DEFAULT 0 COMMENT '上一交易日同策略是否命中',
+  hit_3d INT NOT NULL DEFAULT 0 COMMENT '前3个交易日同策略命中天数',
+  hit_5d INT NOT NULL DEFAULT 0 COMMENT '前5个交易日同策略命中天数',
+  hit_10d INT NOT NULL DEFAULT 0 COMMENT '前10个交易日同策略命中天数',
+  streak INT NOT NULL DEFAULT 0 COMMENT '同策略连续命中天数(含当日)',
   params VARCHAR(512) COMMENT '策略参数JSON快照',
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '首次入库时间',
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -452,4 +469,23 @@ def migrate() -> list[str]:
         for sql in statements:
             db.execute(sql)
         applied.append(f"{table}.pk")
+    return applied
+
+
+def migrate_hit_columns() -> list[str]:
+    """为已存在的 hit 表补齐新增列（幂等），返回实际执行的 <表>.<列> 列表。"""
+    applied = []
+    for table in HIT_TABLES:
+        if not _table_exists(table):
+            continue
+        for column, definition in HIT_ADDED_COLUMNS:
+            df = db.read_df(
+                "SELECT COLUMN_NAME FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s",
+                (table, column),
+            )
+            if not df.empty:
+                continue
+            db.execute(f"ALTER TABLE `{table}` ADD COLUMN `{column}` {definition}")
+            applied.append(f"{table}.{column}")
     return applied

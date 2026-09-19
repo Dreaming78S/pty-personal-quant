@@ -21,13 +21,17 @@ def test_data_init_db_runs_create_all_then_hits_then_migrate(monkeypatch):
                         lambda: calls.append("create_hit_tables") or ["hit_ma_volume"])
     monkeypatch.setattr("quant.data.schemas.migrate",
                         lambda: calls.append("migrate") or ["daily_basic.limit_status"])
+    monkeypatch.setattr("quant.data.schemas.migrate_hit_columns",
+                        lambda: calls.append("migrate_hit_columns")
+                        or ["hit_ma_volume.industry"])
 
     result = runner.invoke(app, ["data", "init-db"])
 
     assert result.exit_code == 0
-    assert calls == ["create_all", "create_hit_tables", "migrate"]
+    assert calls == ["create_all", "create_hit_tables", "migrate",
+                     "migrate_hit_columns"]
     assert "daily_basic.limit_status" in result.output
-    assert "hit_ma_volume" in result.output
+    assert "hit_ma_volume.industry" in result.output
 
 
 def test_data_init_db_quiet_when_no_migrations(monkeypatch):
@@ -35,6 +39,7 @@ def test_data_init_db_quiet_when_no_migrations(monkeypatch):
     monkeypatch.setattr("quant.data.schemas.create_hit_tables",
                         lambda: ["hit_ma_volume"])
     monkeypatch.setattr("quant.data.schemas.migrate", lambda: [])
+    monkeypatch.setattr("quant.data.schemas.migrate_hit_columns", lambda: [])
 
     result = runner.invoke(app, ["data", "init-db"])
 

@@ -75,6 +75,11 @@ def patch_deps(monkeypatch, watermark=None, dates=("20240103", "20240104"),
                             "ts_code": ["600000.SH", "600001.SH", "300001.SZ",
                                         "600002.SH"],
                             "name": ["浦发银行", "邯郸钢铁", "特锐德", "退市测试"]}))
+    monkeypatch.setattr(hits.loader, "load_stock_industries",
+                        lambda: pd.DataFrame({
+                            "ts_code": ["600000.SH", "600001.SH", "300001.SZ",
+                                        "600002.SH"],
+                            "industry": ["银行", "钢铁", "电气", "地产"]}))
     monkeypatch.setattr(hits.loader, "resolve_trade_date", lambda date=None: latest)
     return captured
 
@@ -150,6 +155,33 @@ def test_fill_hits_loads_market_once_for_multiple_strategies(monkeypatch):
 
     assert set(result) == {"hits_dummy", "hits_dummy2"}
     assert len(captured["loads"]) == 1
+
+
+def test_fill_hits_history_columns(monkeypatch):
+    captured = patch_deps(monkeypatch)
+
+    hits.fill_hits("hits_dummy", from_date="20240103", to_date="20240104")
+
+    _, df, _ = captured["upserts"][0]
+    first = df[(df["ts_code"] == "600000.SH") & (df["trade_date"] == "20240103")].iloc[0]
+    assert first["industry"] == "银行"
+    assert first["prev_hit"] == 0
+    assert first["hit_3d"] == 0 and first["hit_5d"] == 0 and first["hit_10d"] == 0
+    assert first["streak"] == 1
+
+    second = df[(df["ts_code"] == "600000.SH") & (df["trade_date"] == "20240104")].iloc[0]
+    assert second["prev_hit"] == 1
+    assert second["hit_3d"] == 1 and second["hit_5d"] == 1 and second["hit_10d"] == 1
+    assert second["streak"] == 2
+
+
+def test_fill_hits_extends_panel_for_history(monkeypatch):
+    captured = patch_deps(monkeypatch)
+
+    hits.fill_hits("hits_dummy", from_date="20240103", to_date="20240104")
+
+    _, kwargs = captured["loads"][0]
+    assert kwargs["warmup_days"] == 2 + hits.HISTORY_DAYS
 
 
 def test_fill_hits_replaces_explicit_window(monkeypatch):

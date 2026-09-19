@@ -14,7 +14,7 @@ def data_init_db() -> None:
 
     names = schemas.create_all() + schemas.create_hit_tables()
     typer.echo(f"已创建/确认 {len(names)} 张表：{', '.join(names)}")
-    migrated = schemas.migrate()
+    migrated = schemas.migrate() + schemas.migrate_hit_columns()
     if migrated:
         typer.echo(f"已补齐 {len(migrated)} 个字段：{', '.join(migrated)}")
 

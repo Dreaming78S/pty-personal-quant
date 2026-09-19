@@ -388,6 +388,55 @@ def test_hit_table_columns_and_ddl_shape():
     assert "历史命中" in spec.ddl
 
 
+def test_hit_tables_include_industry_and_history_columns():
+    assert schemas.HIT_COLUMNS == (
+        "ts_code", "trade_date", "rank", "name", "industry", "close",
+        "raw_close", "amount", "score", "prev_hit", "hit_3d", "hit_5d",
+        "hit_10d", "streak", "params",
+    )
+    ddl = schemas.HIT_TABLES["hit_ma_volume"].ddl
+    for fragment in ("industry VARCHAR(32)", "prev_hit TINYINT",
+                     "hit_3d INT", "hit_5d INT", "hit_10d INT", "streak INT"):
+        assert fragment in ddl
+
+
+def test_migrate_hit_columns_adds_missing_columns(monkeypatch):
+    executed = []
+
+    def read_df(sql, params=None):
+        if "information_schema.TABLES" in sql:
+            return pd.DataFrame({"TABLE_NAME": [params[0]]})
+        return pd.DataFrame()
+
+    monkeypatch.setattr(schemas.db, "read_df", read_df)
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    applied = schemas.migrate_hit_columns()
+
+    expected = len(schemas.HIT_TABLES) * len(schemas.HIT_ADDED_COLUMNS)
+    assert len(applied) == expected
+    assert len(executed) == expected
+    assert all("ADD COLUMN" in sql for sql in executed)
+    assert "hit_ma_volume.industry" in applied
+
+
+def test_migrate_hit_columns_skips_present_columns(monkeypatch):
+    executed = []
+
+    def read_df(sql, params=None):
+        if "information_schema.TABLES" in sql:
+            return pd.DataFrame({"TABLE_NAME": [params[0]]})
+        return pd.DataFrame({"COLUMN_NAME": [params[1]]})
+
+    monkeypatch.setattr(schemas.db, "read_df", read_df)
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: executed.append(sql))
+
+    assert schemas.migrate_hit_columns() == []
+    assert executed == []
+
+
 def test_create_hit_tables_executes_all_ddls(monkeypatch):
     calls = []
     monkeypatch.setattr(schemas.db, "execute",
