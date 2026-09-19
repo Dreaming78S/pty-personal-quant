@@ -20,6 +20,9 @@ from quant.strategies.base import list_strategies
 
 MAX_TEXT_CHARS = 20000
 CO_MESSAGE_KEY = "多策略共振"
+COMBINED_MESSAGE_KEY = "5日复合共振"
+COMBINED_BASE_STRATEGY = "rise_shrink_pullback"
+COMBINED_WINDOW_DAYS = 5
 RETRY_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 1.0
 
@@ -46,6 +49,10 @@ def resolve_strategies(strategy: str) -> list[str]:
 
 def _display_date(date: str) -> str:
     return f"{date[:4]}-{date[4:6]}-{date[6:]}"
+
+
+def _display_md(date: str) -> str:
+    return f"{date[4:6]}-{date[6:]}"
 
 
 def _fmt(value, spec: str) -> str:
@@ -208,6 +215,7 @@ def build_messages(strategy: str = "all", date: str | None = None,
         messages[name] = format_message(name, target, rows)
     if include_co:
         messages[CO_MESSAGE_KEY] = build_co_message(target)
+        messages[COMBINED_MESSAGE_KEY] = build_combined_message(target)
     return messages
 
 
@@ -228,6 +236,96 @@ def build_co_message(date: str | None = None) -> FeishuMessage:
         frames.append(rows)
     hits = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return format_co_message(target, hits)
+
+
+def format_combined_message(trade_date: str, window_dates: list[str],
+                            rise_rows: pd.DataFrame,
+                            other_hits: pd.DataFrame) -> FeishuMessage:
+    """近 5 日复合共振：当日命中 rise_shrink_pullback 且窗口内命中过其他策略。
+
+    rise_rows 为基准策略当日命中（ts_code/name/industry/raw_close/amount），
+    other_hits 为窗口内其他策略命中明细（strategy/ts_code/trade_date）。
+    """
+    title = (f"【{COMBINED_MESSAGE_KEY}（当日含{COMBINED_BASE_STRATEGY}）】"
+             f"{_display_date(trade_date)}")
+    if rise_rows.empty or other_hits.empty:
+        return FeishuMessage(title, ("今日无符合股票",), False)
+
+    hits = other_hits[other_hits["ts_code"].isin(set(rise_rows["ts_code"]))].copy()
+    if hits.empty:
+        return FeishuMessage(title, ("今日无符合股票",), False)
+    hits["trade_date"] = hits["trade_date"].astype(str)
+
+    grouped: dict[str, dict[str, set[str]]] = {}
+    for code, strategy, date in zip(hits["ts_code"], hits["strategy"],
+                                    hits["trade_date"]):
+        grouped.setdefault(code, {}).setdefault(strategy, set()).add(date)
+
+    details = rise_rows.drop_duplicates("ts_code").set_index("ts_code")
+    events = pd.DataFrame({
+        "ts_code": list(grouped),
+        "n_strategies": [len(by_strategy) for by_strategy in grouped.values()],
+    })
+    events["amount"] = events["ts_code"].map(details["amount"])
+    events = events.sort_values(["n_strategies", "amount"],
+                                ascending=[False, False])
+
+    lines = [f"窗口：{_display_md(window_dates[0])} ~ "
+             f"{_display_md(window_dates[-1])}（含当日）"]
+    for index, (_, event) in enumerate(events.iterrows(), start=1):
+        by_strategy = grouped[event["ts_code"]]
+        parts = []
+        for strategy in sorted(by_strategy,
+                               key=lambda name: (min(by_strategy[name]), name)):
+            dates = "、".join(_display_md(d)
+                              for d in sorted(by_strategy[strategy]))
+            parts.append(f"{strategy}({dates})")
+        row = details.loc[event["ts_code"]]
+        stock = _format_stock(index, row.get("name"), row.get("industry"),
+                              row.get("raw_close"))
+        lines.append(f"{stock} — {'、'.join(parts)}")
+    return _finish(f"{title} 共 {len(events)} 只", lines, True,
+                   template="purple")
+
+
+def build_combined_message(date: str | None = None) -> FeishuMessage:
+    """复合共振卡片：覆盖全部已注册策略，要求所有命中表都已追平目标日期。"""
+    target = loader.resolve_trade_date(date)
+    for name in sorted(list_strategies()):
+        _check_watermark(name, target)
+
+    dates = [str(d) for d in loader.open_trade_dates()]
+    if target in dates:
+        index = len(dates) - 1 - dates[::-1].index(target)
+        window = dates[max(0, index - (COMBINED_WINDOW_DAYS - 1)): index + 1]
+    else:
+        window = [d for d in dates if d <= target][-COMBINED_WINDOW_DAYS:]
+    if not window:
+        window = [target]
+
+    rise_rows = db.read_df(
+        f"SELECT ts_code, name, industry, raw_close, amount "
+        f"FROM `{schemas.hit_table_name(COMBINED_BASE_STRATEGY)}` "
+        f"WHERE trade_date=%s", (target,))
+    frames = []
+    for name in sorted(list_strategies()):
+        if name == COMBINED_BASE_STRATEGY:
+            continue
+        table = schemas.hit_table_name(name)
+        rows = db.read_df(
+            f"SELECT ts_code, trade_date FROM `{table}` "
+            f"WHERE trade_date>=%s AND trade_date<=%s",
+            (window[0], window[-1]))
+        if rows.empty:
+            continue
+        rows = rows.copy()
+        rows["strategy"] = name
+        frames.append(rows)
+    if frames:
+        other_hits = pd.concat(frames, ignore_index=True)
+    else:
+        other_hits = pd.DataFrame(columns=["ts_code", "trade_date", "strategy"])
+    return format_combined_message(target, window, rise_rows, other_hits)
 
 
 def notify_hits(strategy: str = "all", date: str | None = None,

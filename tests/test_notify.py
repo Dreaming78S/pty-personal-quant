@@ -32,6 +32,27 @@ def _co_hits_frame():
     })
 
 
+def _rise_rows():
+    return pd.DataFrame({
+        "ts_code": ["603936.SH", "603285.SH", "600000.SH"],
+        "name": ["博敏电子", "键邦股份", "浦发银行"],
+        "industry": ["元器件", "化工原料", "银行"],
+        "raw_close": [21.34, 37.86, 10.25],
+        "amount": [1068000.0, 205000.0, 9999999.0],
+    })
+
+
+def _other_hits():
+    return pd.DataFrame({
+        "strategy": ["rps_breakout", "rps_breakout", "turtle_trade",
+                     "turtle_trade", "ma_volume", "turtle_trade"],
+        "ts_code": ["603936.SH", "603936.SH", "603285.SH",
+                    "603285.SH", "603936.SH", "603936.SH"],
+        "trade_date": ["20260915", "20260916", "20260915",
+                       "20260918", "20260918", "20260918"],
+    })
+
+
 def _patch_empty_sources(monkeypatch):
     monkeypatch.setattr(notify.loader, "resolve_trade_date",
                         lambda date=None: "20260918")
@@ -317,20 +338,29 @@ def test_build_messages_includes_empty_strategies(monkeypatch):
     monkeypatch.setattr(notify, "build_co_message",
                         lambda date: notify.FeishuMessage(
                             "【多策略共振】2026-09-18", ("今日无共振",), False))
+    monkeypatch.setattr(notify, "build_combined_message",
+                        lambda date: notify.FeishuMessage(
+                            "【5日复合共振（当日含rise_shrink_pullback）】"
+                            "2026-09-18", ("今日无符合股票",), False))
 
     messages = notify.build_messages("all", "20260918")
 
-    assert list(messages) == ["ma_volume", "多策略共振"]
+    assert list(messages) == ["ma_volume", "多策略共振", "5日复合共振"]
     assert notify.render_text(messages["ma_volume"]) == (
         "【ma_volume】2026-09-18\n\n今日无命中")
     assert notify.render_text(messages["多策略共振"]) == (
         "【多策略共振】2026-09-18\n\n今日无共振")
+    assert notify.render_text(messages["5日复合共振"]) == (
+        "【5日复合共振（当日含rise_shrink_pullback）】"
+        "2026-09-18\n\n今日无符合股票")
 
 
 def test_build_messages_can_skip_co_message(monkeypatch):
     _patch_empty_sources(monkeypatch)
     monkeypatch.setattr(notify, "build_co_message",
                         lambda date: pytest.fail("不应组装共振卡片"))
+    monkeypatch.setattr(notify, "build_combined_message",
+                        lambda date: pytest.fail("不应组装复合共振卡片"))
 
     messages = notify.build_messages("all", "20260918", include_co=False)
 
@@ -396,6 +426,90 @@ def test_build_co_message_collects_all_strategy_hits(monkeypatch):
     assert message.title == "【多策略共振】2026-09-18 共 1 只"
     assert message.lines == (
         "1. **博敏电子** 21.34 [元器件] — ma_volume、rps_breakout",)
+
+
+def test_format_combined_message_lists_window_hits():
+    message = notify.format_combined_message(
+        "20260918",
+        ["20260914", "20260915", "20260916", "20260917", "20260918"],
+        _rise_rows(), _other_hits())
+
+    assert message.title == ("【5日复合共振（当日含rise_shrink_pullback）】"
+                             "2026-09-18 共 2 只")
+    assert message.lines == (
+        "窗口：09-14 ~ 09-18（含当日）",
+        "1. **博敏电子** 21.34 [元器件] — rps_breakout(09-15、09-16)、"
+        "ma_volume(09-18)、turtle_trade(09-18)",
+        "2. **键邦股份** 37.86 [化工原料] — turtle_trade(09-15、09-18)",
+    )
+    assert message.has_hits is True
+    assert message.template == "purple"
+
+
+def test_format_combined_message_without_qualifying_stocks():
+    message = notify.format_combined_message(
+        "20260918", ["20260914", "20260918"], _rise_rows(),
+        _other_hits().iloc[0:0])
+
+    assert message.title == ("【5日复合共振（当日含rise_shrink_pullback）】"
+                             "2026-09-18")
+    assert message.lines == ("今日无符合股票",)
+    assert message.has_hits is False
+
+
+def test_format_combined_message_without_rise_hits():
+    message = notify.format_combined_message(
+        "20260918", ["20260914", "20260918"], _rise_rows().iloc[0:0],
+        _other_hits())
+
+    assert message.lines == ("今日无符合股票",)
+
+
+def test_build_combined_message_checks_all_watermarks(monkeypatch):
+    monkeypatch.setattr(notify.loader, "resolve_trade_date",
+                        lambda date=None: "20260918")
+    monkeypatch.setattr(notify, "list_strategies",
+                        lambda: {"ma_volume": object,
+                                 "rise_shrink_pullback": object})
+    monkeypatch.setattr(
+        notify.ingest, "get_watermark",
+        lambda table: ("20260918" if table == "hit_rise_shrink_pullback"
+                       else "20260917"))
+
+    with pytest.raises(ValueError, match="hits update"):
+        notify.build_combined_message("20260918")
+
+
+def test_build_combined_message_aggregates_other_strategies(monkeypatch):
+    monkeypatch.setattr(notify.loader, "resolve_trade_date",
+                        lambda date=None: "20260918")
+    monkeypatch.setattr(notify.loader, "open_trade_dates",
+                        lambda: ["20260914", "20260915", "20260916",
+                                 "20260917", "20260918"])
+    monkeypatch.setattr(notify, "list_strategies",
+                        lambda: {"ma_volume": object,
+                                 "rise_shrink_pullback": object})
+    monkeypatch.setattr(notify.ingest, "get_watermark",
+                        lambda table: "20260918")
+
+    def fake_read(sql, params=None):
+        if "hit_rise_shrink_pullback" in sql:
+            return _rise_rows()
+        if "hit_ma_volume" in sql:
+            return pd.DataFrame({"ts_code": ["603936.SH", "603936.SH"],
+                                 "trade_date": ["20260915", "20260918"]})
+        return pd.DataFrame(columns=["ts_code", "trade_date"])
+
+    monkeypatch.setattr(notify.db, "read_df", fake_read)
+
+    message = notify.build_combined_message("20260918")
+
+    assert message.title == ("【5日复合共振（当日含rise_shrink_pullback）】"
+                             "2026-09-18 共 1 只")
+    assert message.lines == (
+        "窗口：09-14 ~ 09-18（含当日）",
+        "1. **博敏电子** 21.34 [元器件] — ma_volume(09-15、09-18)",
+    )
 
 
 def test_notify_hits_requires_webhook(monkeypatch):
