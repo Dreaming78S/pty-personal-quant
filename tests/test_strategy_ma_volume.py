@@ -52,6 +52,22 @@ def test_ma_volume_defaults_and_warmup():
     assert s.warmup_days == 21
 
 
+def test_ma_volume_ignores_float_equal_means():
+    # ma2 与 ma3 数学相等（浮点差 1ulp）不算金叉；明显超过容差的差异仍命中
+    base = [5, 12, 10, 9.5, 10.5]
+    vols = [100, 100, 100, 100, 500]
+    s = get_strategy("ma_volume", ma_short=2, ma_long=3, vol_ma=3, vol_ratio=2.0)
+
+    exact = s.generate_signals(make_bars(base, vols))
+    nudged = s.generate_signals(
+        make_bars(base[:4] + [10.5 + 4e-12], vols))
+    shifted = s.generate_signals(make_bars(base[:4] + [10.6], vols))
+
+    assert not exact.any()
+    assert not nudged.any()
+    assert shifted.iloc[-1]
+
+
 def test_ma_volume_no_signal_when_short_warmup_rows():
     closes = [10, 11]
     s = get_strategy("ma_volume")

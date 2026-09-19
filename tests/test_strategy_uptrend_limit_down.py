@@ -63,6 +63,16 @@ def test_uptrend_limit_down_volume_mean_includes_today():
     assert list(signals) == [False] * 5 + [True]
 
 
+def test_uptrend_limit_down_treats_tiny_ma_difference_as_equal():
+    closes = [10.0, 10.0, 10.0, 10.0, 10.0 + 1e-9, 9.0]
+    vols = [100, 100, 100, 100, 100, 500]
+    s = get_strategy("uptrend_limit_down", **PARAMS)
+
+    signals = s.generate_signals(make_bars(closes, closes, vols))
+
+    assert not signals.any()
+
+
 def test_uptrend_limit_down_defaults_and_warmup():
     s = get_strategy("uptrend_limit_down")
     assert s.p.ma_short == 20

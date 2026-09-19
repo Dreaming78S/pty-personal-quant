@@ -5,6 +5,8 @@ from pydantic import BaseModel
 
 from quant.strategies.base import Strategy, register_strategy
 
+_EPS = 1e-9
+
 
 class MaVolumeParams(BaseModel):
     ma_short: int = 5
@@ -29,6 +31,11 @@ class MaVolume(Strategy):
         ma_short = close.rolling(self.p.ma_short).mean()
         ma_long = close.rolling(self.p.ma_long).mean()
         vol_ma = vol.rolling(self.p.vol_ma).mean()
-        cross_up = (ma_short > ma_long) & (ma_short.shift(1) < ma_long.shift(1))
+        # 均线数学相等（含浮点 1ulp 噪声）不算金叉：滚动均值在不同面板偏移下
+        # 可能有 1ulp 级差异，严格 >/< 会让信号随面板长短闪烁
+        diff = ma_short - ma_long
+        diff_prev = ma_short.shift(1) - ma_long.shift(1)
+        cross_up = ((diff > _EPS * ma_long.abs())
+                    & (diff_prev < -_EPS * ma_long.shift(1).abs()))
         signal = cross_up & (vol > self.p.vol_ratio * vol_ma)
         return signal.fillna(False)
