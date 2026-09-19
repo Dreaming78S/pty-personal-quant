@@ -363,6 +363,41 @@ def test_migrate_adds_missing_column(monkeypatch):
     assert "AFTER `circ_mv`" in executed[0]
 
 
+def test_hit_tables_cover_six_strategies():
+    assert schemas.HIT_STRATEGIES == ("ma_volume", "turtle_trade",
+                                      "high_tight_flag", "limit_up_shakeout",
+                                      "uptrend_limit_down", "rps_breakout")
+    assert set(schemas.HIT_TABLES) == {
+        "hit_ma_volume", "hit_turtle_trade", "hit_high_tight_flag",
+        "hit_limit_up_shakeout", "hit_uptrend_limit_down", "hit_rps_breakout",
+    }
+
+
+def test_hit_tables_not_in_source_tables():
+    assert set(schemas.TABLES) & set(schemas.HIT_TABLES) == set()
+
+
+def test_hit_table_columns_and_ddl_shape():
+    spec = schemas.HIT_TABLES["hit_ma_volume"]
+    assert spec.columns == schemas.HIT_COLUMNS
+    assert schemas.hit_table_name("ma_volume") == "hit_ma_volume"
+    assert "PRIMARY KEY (ts_code, trade_date)" in spec.ddl
+    assert "`rank` INT" in spec.ddl
+    assert "KEY idx_trade_date (trade_date)" in spec.ddl
+    assert "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" in spec.ddl
+    assert "历史命中" in spec.ddl
+
+
+def test_create_hit_tables_executes_all_ddls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: calls.append(sql))
+    names = schemas.create_hit_tables()
+    assert set(names) == set(schemas.HIT_TABLES)
+    assert len(calls) == len(schemas.HIT_TABLES)
+    assert all("CREATE TABLE IF NOT EXISTS" in sql for sql in calls)
+
+
 def test_migrate_applies_add_then_widen_in_order(monkeypatch):
     executed = []
 

@@ -2,15 +2,17 @@ import typer
 
 app = typer.Typer(help="A股量化选股与回测系统", no_args_is_help=True)
 data_app = typer.Typer(help="数据管理", no_args_is_help=True)
+hits_app = typer.Typer(help="策略历史命中", no_args_is_help=True)
 app.add_typer(data_app, name="data")
+app.add_typer(hits_app, name="hits")
 
 
 @data_app.command("init-db")
 def data_init_db() -> None:
-    """在 MySQL 中创建全部数据表并补齐已有表的缺失列（幂等）。"""
+    """在 MySQL 中创建全部数据表（含 hit_<策略>）并补齐已有表的缺失列（幂等）。"""
     from quant.data import schemas
 
-    names = schemas.create_all()
+    names = schemas.create_all() + schemas.create_hit_tables()
     typer.echo(f"已创建/确认 {len(names)} 张表：{', '.join(names)}")
     migrated = schemas.migrate()
     if migrated:
@@ -53,7 +55,9 @@ def data_status() -> None:
         raise typer.Exit(code=1)
 
     rows = []
-    for name in schemas.TABLES:
+    for name in [*schemas.TABLES, *schemas.HIT_TABLES]:
+        is_hit = name in schemas.HIT_TABLES
+        task = name
         try:
             count = db.scalar(f"SELECT COUNT(*) FROM `{name}`")
         except Exception:  # noqa: BLE001 - 表不存在时提示即可
@@ -63,7 +67,7 @@ def data_status() -> None:
         else:
             try:
                 watermark = db.scalar(
-                    "SELECT last_trade_date FROM ingest_log WHERE task_name=%s", (name,)
+                    "SELECT last_trade_date FROM ingest_log WHERE task_name=%s", (task,)
                 ) or "-"
             except Exception:  # noqa: BLE001 - 水位线表缺失时留空
                 watermark = "-"
@@ -71,9 +75,32 @@ def data_status() -> None:
             "表": name,
             "行数": count,
             "水位线": watermark,
-            "缓存": "有" if cache.cache_path(name).exists() else "无",
+            "缓存": "-" if is_hit else ("有" if cache.cache_path(name).exists() else "无"),
         })
     typer.echo(pd.DataFrame(rows).to_string(index=False))
+
+
+@hits_app.command("update")
+def hits_update(
+    strategy: str = typer.Option("all", "--strategy", "-s",
+                                 help="all、策略名或逗号组合"),
+    from_date: str = typer.Option(None, "--from-date",
+                                  help="起始日期，缺省从水位线或 2024-01-01 续跑"),
+    to_date: str = typer.Option(None, "--to-date", help="结束日期，缺省最新交易日"),
+) -> None:
+    """按策略回填/增量写入历史命中表 hit_<策略>。"""
+    from quant.engine import hits
+    from quant.utils.dates import to_yyyymmdd
+    from quant.utils.logging import setup_logging
+
+    setup_logging()
+    results = hits.fill_hits(
+        strategy,
+        from_date=to_yyyymmdd(from_date) if from_date else None,
+        to_date=to_yyyymmdd(to_date) if to_date else None,
+    )
+    for name, rows in results.items():
+        typer.echo(f"hit_{name}: 已写入 {rows} 行")
 
 
 @app.command("list")

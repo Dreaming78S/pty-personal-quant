@@ -294,8 +294,63 @@ CREATE TABLE IF NOT EXISTS ingest_log (
 }
 
 
+HIT_STRATEGIES: tuple[str, ...] = (
+    "ma_volume", "turtle_trade", "high_tight_flag", "limit_up_shakeout",
+    "uptrend_limit_down", "rps_breakout",
+)
+
+HIT_COLUMNS: tuple[str, ...] = (
+    "ts_code", "trade_date", "rank", "name", "close", "raw_close",
+    "amount", "score", "params",
+)
+
+
+def hit_table_name(strategy: str) -> str:
+    return f"hit_{strategy}"
+
+
+def _hit_ddl(table: str, strategy: str) -> str:
+    return f"""
+CREATE TABLE IF NOT EXISTS `{table}` (
+  ts_code VARCHAR(12) NOT NULL COMMENT 'TS代码',
+  trade_date CHAR(8) NOT NULL COMMENT '信号日期',
+  `rank` INT COMMENT '当日命中排名(按score降序)',
+  name VARCHAR(32) COMMENT '股票名称(入库时快照)',
+  close DECIMAL(12,4) COMMENT '后复权收盘价',
+  raw_close DECIMAL(12,4) COMMENT '不复权收盘价',
+  amount DECIMAL(20,4) COMMENT '成交额(千元)',
+  score DECIMAL(20,6) COMMENT '排序分(该策略口径)',
+  params VARCHAR(512) COMMENT '策略参数JSON快照',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '首次入库时间',
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (ts_code, trade_date),
+  KEY idx_trade_date (trade_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='{strategy}历史命中'
+"""
+
+
+# 派生的策略命中表：不参与 Tushare 抓取、缓存镜像与夜间重建清空。
+HIT_TABLES: dict[str, TableSpec] = {
+    hit_table_name(strategy): TableSpec(
+        name=hit_table_name(strategy),
+        columns=HIT_COLUMNS,
+        ddl=_hit_ddl(hit_table_name(strategy), strategy),
+        date_column="trade_date",
+    )
+    for strategy in HIT_STRATEGIES
+}
+
+
 def columns_of(table: str) -> list[str]:
+    if table in HIT_TABLES:
+        return list(HIT_TABLES[table].columns)
     return list(TABLES[table].columns)
+
+
+def create_hit_tables() -> list[str]:
+    for spec in HIT_TABLES.values():
+        db.execute(spec.ddl)
+    return list(HIT_TABLES)
 
 
 def date_column(table: str) -> str | None:

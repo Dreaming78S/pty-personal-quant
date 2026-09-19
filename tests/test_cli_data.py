@@ -12,29 +12,34 @@ def test_help_lists_data_commands():
     assert "status" in result.output
 
 
-def test_data_init_db_runs_create_all_then_migrate(monkeypatch):
+def test_data_init_db_runs_create_all_then_hits_then_migrate(monkeypatch):
     calls = []
 
     monkeypatch.setattr("quant.data.schemas.create_all",
                         lambda: calls.append("create_all") or ["daily"])
+    monkeypatch.setattr("quant.data.schemas.create_hit_tables",
+                        lambda: calls.append("create_hit_tables") or ["hit_ma_volume"])
     monkeypatch.setattr("quant.data.schemas.migrate",
                         lambda: calls.append("migrate") or ["daily_basic.limit_status"])
 
     result = runner.invoke(app, ["data", "init-db"])
 
     assert result.exit_code == 0
-    assert calls == ["create_all", "migrate"]
+    assert calls == ["create_all", "create_hit_tables", "migrate"]
     assert "daily_basic.limit_status" in result.output
+    assert "hit_ma_volume" in result.output
 
 
 def test_data_init_db_quiet_when_no_migrations(monkeypatch):
     monkeypatch.setattr("quant.data.schemas.create_all", lambda: ["daily"])
+    monkeypatch.setattr("quant.data.schemas.create_hit_tables",
+                        lambda: ["hit_ma_volume"])
     monkeypatch.setattr("quant.data.schemas.migrate", lambda: [])
 
     result = runner.invoke(app, ["data", "init-db"])
 
     assert result.exit_code == 0
-    assert "已创建/确认 1 张表" in result.output
+    assert "已创建/确认 2 张表" in result.output
     assert "已补齐" not in result.output
 
 
