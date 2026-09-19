@@ -1,0 +1,6 @@
+strategy: rps_breakout
+params:
+  window: 120
+  rps_threshold: 90
+  high_ratio: 0.9
+  high_min_bars: 60
