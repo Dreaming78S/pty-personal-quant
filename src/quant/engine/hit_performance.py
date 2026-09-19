@@ -7,14 +7,18 @@ SELL_OFFSET = 2
 BUCKET_NAMES = ("<-5", "-5~-2", "-2~0", "0~2", "2~5", ">5")
 
 
-def forward_returns(market: pd.DataFrame, hits: pd.DataFrame) -> pd.DataFrame:
-    """命中推荐的两日持有收益：T+1 开盘买入、T+2 收盘卖出（界面实际成交价，%）。
+def forward_returns(market: pd.DataFrame, hits: pd.DataFrame,
+                    sell_offset: int = SELL_OFFSET) -> pd.DataFrame:
+    """命中推荐的两日持有收益：T+1 开盘买入、T+sell_offset 收盘卖出（界面实际成交价，%）。
 
     价格取不复权 raw_open/raw_close（行情界面显示的真实价格），持有期内的
-    分红现金不单独计入。T 为命中日；T+1/T+2 取交易日历上紧邻的两个交易日
-    （停牌日不占位）。返回列：ts_code, trade_date, buy_date, sell_date,
-    buy_open, sell_close, ret_pct, status（ok / suspended / no_data）。
+    分红现金不单独计入。T 为命中日；买入日与卖出日取交易日历上第 1 与第
+    sell_offset 个交易日（停牌日不占位），默认 2 即 T+1 买入、T+2 卖出。
+    返回列：ts_code, trade_date, buy_date, sell_date, buy_open, sell_close,
+    ret_pct, status（ok / suspended / no_data）。
     """
+    if sell_offset < BUY_OFFSET:
+        raise ValueError(f"sell_offset 至少为 {BUY_OFFSET}（买入日），收到 {sell_offset}")
     dates = sorted(market["trade_date"].astype(str).unique())
     rank = {d: i for i, d in enumerate(dates)}
     date_of = {i: d for d, i in rank.items()}
@@ -26,7 +30,7 @@ def forward_returns(market: pd.DataFrame, hits: pd.DataFrame) -> pd.DataFrame:
     frame["trade_date"] = frame["trade_date"].astype(str)
     frame["_rank"] = frame["trade_date"].map(rank)
     frame["buy_date"] = (frame["_rank"] + BUY_OFFSET).map(date_of)
-    frame["sell_date"] = (frame["_rank"] + SELL_OFFSET).map(date_of)
+    frame["sell_date"] = (frame["_rank"] + sell_offset).map(date_of)
 
     buy = (px[["ts_code", "trade_date", "raw_open"]]
            .rename(columns={"trade_date": "buy_date", "raw_open": "buy_open"}))

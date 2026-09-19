@@ -39,6 +39,31 @@ def test_forward_returns_alignment_and_win_loss():
     assert out.loc["600002.SH", "ret_pct"] == pytest.approx(8.0)
 
 
+def test_forward_returns_supports_custom_sell_offset():
+    dates = ["20260105", "20260106", "20260107", "20260108", "20260109"]
+    market = pd.DataFrame([
+        {"ts_code": "600000.SH", "trade_date": d,
+         "raw_open": 10.0 + i, "raw_close": 11.0 + i}
+        for i, d in enumerate(dates)
+    ])
+    hits = pd.DataFrame({"ts_code": ["600000.SH"],
+                         "trade_date": ["20260105"]})
+
+    out = hit_performance.forward_returns(market, hits, sell_offset=4).iloc[0]
+
+    assert out["buy_date"] == "20260106"
+    assert out["sell_date"] == "20260109"
+    assert out["buy_open"] == 11.0
+    assert out["sell_close"] == 15.0
+    assert out["ret_pct"] == pytest.approx((15.0 - 11.0) / 11.0 * 100)
+    # N=0：买入日收盘卖出
+    same_day = hit_performance.forward_returns(market, hits, sell_offset=1).iloc[0]
+    assert same_day["sell_date"] == same_day["buy_date"]
+
+    with pytest.raises(ValueError):
+        hit_performance.forward_returns(market, hits, sell_offset=0)
+
+
 def test_forward_returns_skips_suspended_and_missing_tail():
     market = make_market()
     hits = pd.DataFrame({
