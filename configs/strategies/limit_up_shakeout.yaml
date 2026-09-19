@@ -1,0 +1,4 @@
+strategy: limit_up_shakeout
+params:
+  limit_pct: 0.095
+  vol_ratio: 2.0
