@@ -92,6 +92,11 @@ def fill_hits(strategy: str = "all", from_date: str | None = None,
             continue
         frame = _hit_frame(strat, market, dates)
         written = 0
+        if from_date:
+            # 显式指定起始日期视为重算：先清空区间内旧命中，避免语义变更后残留过期记录
+            db.execute(f"DELETE FROM `{schemas.hit_table_name(name)}` "
+                       "WHERE trade_date>=%s AND trade_date<=%s",
+                       (dates[0], dates[-1]))
         if not frame.empty:
             written = db.upsert_df(schemas.hit_table_name(name), frame,
                                    columns=list(schemas.HIT_COLUMNS))

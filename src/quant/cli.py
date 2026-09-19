@@ -85,7 +85,7 @@ def hits_update(
     strategy: str = typer.Option("all", "--strategy", "-s",
                                  help="all、策略名或逗号组合"),
     from_date: str = typer.Option(None, "--from-date",
-                                  help="起始日期，缺省从水位线或 2024-01-01 续跑"),
+                                  help="起始日期（指定时先清空区间再重算），缺省从水位线或 2024-01-01 续跑"),
     to_date: str = typer.Option(None, "--to-date", help="结束日期，缺省最新交易日"),
 ) -> None:
     """按策略回填/增量写入历史命中表 hit_<策略>。"""

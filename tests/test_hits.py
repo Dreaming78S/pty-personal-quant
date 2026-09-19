@@ -53,7 +53,7 @@ def make_market():
 
 def patch_deps(monkeypatch, watermark=None, dates=("20240103", "20240104"),
                latest="20240105"):
-    captured = {"upserts": [], "watermarks": [], "loads": []}
+    captured = {"upserts": [], "watermarks": [], "loads": [], "deletes": []}
 
     monkeypatch.setattr(hits.loader, "load_market_data",
                         lambda *a, **k: captured["loads"].append((a, k)) or make_market())
@@ -62,6 +62,8 @@ def patch_deps(monkeypatch, watermark=None, dates=("20240103", "20240104"),
     monkeypatch.setattr(hits.ingest, "get_watermark", lambda task: watermark)
     monkeypatch.setattr(hits.ingest, "set_watermark",
                         lambda task, d: captured["watermarks"].append((task, d)))
+    monkeypatch.setattr(hits.db, "execute",
+                        lambda sql, params=None: captured["deletes"].append((sql, params)))
 
     def fake_upsert(table, df, columns=None):
         captured["upserts"].append((table, df.copy(), columns))
@@ -148,6 +150,25 @@ def test_fill_hits_loads_market_once_for_multiple_strategies(monkeypatch):
 
     assert set(result) == {"hits_dummy", "hits_dummy2"}
     assert len(captured["loads"]) == 1
+
+
+def test_fill_hits_replaces_explicit_window(monkeypatch):
+    captured = patch_deps(monkeypatch)
+
+    hits.fill_hits("hits_dummy", from_date="20240103", to_date="20240104")
+
+    assert len(captured["deletes"]) == 1
+    sql, params = captured["deletes"][0]
+    assert "DELETE FROM `hit_hits_dummy`" in sql
+    assert params == ("20240103", "20240104")
+
+
+def test_fill_hits_incremental_run_does_not_delete(monkeypatch):
+    captured = patch_deps(monkeypatch, watermark="20240104")
+
+    hits.fill_hits("hits_dummy")
+
+    assert captured["deletes"] == []
 
 
 def test_fill_hits_rejects_unknown_strategy(monkeypatch):
