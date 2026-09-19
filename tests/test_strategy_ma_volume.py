@@ -13,7 +13,7 @@ def make_bars(closes, vols):
 
 
 def test_ma_volume_signal_on_cross_with_volume():
-    closes = [10, 10, 10, 9, 11, 11, 11]
+    closes = [10, 10, 11, 9, 10, 11, 11]
     vols = [100, 100, 100, 100, 100, 500, 100]
     s = get_strategy("ma_volume", ma_short=2, ma_long=3, vol_ma=3, vol_ratio=2.0)
 
@@ -23,7 +23,7 @@ def test_ma_volume_signal_on_cross_with_volume():
 
 
 def test_ma_volume_requires_volume_spike():
-    closes = [10, 10, 10, 9, 11, 11, 11]
+    closes = [10, 10, 11, 9, 10, 11, 11]
     vols = [100, 100, 100, 100, 100, 150, 100]
     s = get_strategy("ma_volume", ma_short=2, ma_long=3, vol_ma=3, vol_ratio=2.0)
 
@@ -32,8 +32,23 @@ def test_ma_volume_requires_volume_spike():
     assert not signals.any()
 
 
-def test_ma_volume_warmup():
+def test_ma_volume_strict_cross_needs_yesterday_below():
+    # 昨日 ma2 == ma3（相等不算"昨日小于"），今日上穿不命中
+    closes = [10, 10, 10, 9, 11, 11, 11]
+    vols = [100, 100, 100, 100, 100, 500, 100]
+    s = get_strategy("ma_volume", ma_short=2, ma_long=3, vol_ma=3, vol_ratio=2.0)
+
+    signals = s.generate_signals(make_bars(closes, vols))
+
+    assert not signals.any()
+
+
+def test_ma_volume_defaults_and_warmup():
     s = get_strategy("ma_volume")
+    assert s.p.ma_short == 5
+    assert s.p.ma_long == 20
+    assert s.p.vol_ma == 20
+    assert s.p.vol_ratio == 1.5
     assert s.warmup_days == 21
 
 
