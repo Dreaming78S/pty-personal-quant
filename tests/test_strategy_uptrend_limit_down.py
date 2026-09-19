@@ -43,6 +43,26 @@ def test_uptrend_limit_down_false_without_uptrend():
         make_bars(closes, closes, vols)).any()
 
 
+def test_uptrend_limit_down_limit_check_uses_raw_close():
+    # 复权收盘 10.6 不满足 -9.5%，原始收盘 9.9 满足；必须用 raw_close 判定。
+    closes = [10.0, 10.2, 10.4, 10.6, 11.0, 10.6]
+    raw_closes = [10.0, 10.2, 10.4, 10.6, 11.0, 9.9]
+    vols = [100, 100, 100, 100, 100, 500]
+    s = get_strategy("uptrend_limit_down", **PARAMS)
+    signals = s.generate_signals(make_bars(closes, raw_closes, vols))
+    assert list(signals) == [False] * 5 + [True]
+
+
+def test_uptrend_limit_down_volume_mean_includes_today():
+    # 末根 500 > 2×mean(100,100,500)≈466.7 成立；若均量不含当日则
+    # 2×mean(1000,100,100)=800，500>800 不成立。
+    closes = [10.0, 10.2, 10.4, 10.6, 11.0, 9.9]
+    vols = [100, 100, 1000, 100, 100, 500]
+    s = get_strategy("uptrend_limit_down", **PARAMS)
+    signals = s.generate_signals(make_bars(closes, closes, vols))
+    assert list(signals) == [False] * 5 + [True]
+
+
 def test_uptrend_limit_down_defaults_and_warmup():
     s = get_strategy("uptrend_limit_down")
     assert s.p.ma_short == 20

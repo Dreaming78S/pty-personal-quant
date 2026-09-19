@@ -52,6 +52,17 @@ def test_limit_up_shakeout_false_when_support_breaks():
         make_bars(raw_close, open_, close, low, vols)).any()
 
 
+def test_limit_up_shakeout_exact_volume_boundary_not_signaled():
+    raw_close = [10.0, 11.0, 10.4]
+    close = [10.0, 11.0, 10.5]
+    open_ = [10.0, 10.8, 11.0]
+    low = [9.9, 10.9, 11.0]
+    vols = [100, 100, 200]  # 200 == 2.0 × 昨日 100，严格大于才放量
+    s = get_strategy("limit_up_shakeout")
+    signals = s.generate_signals(make_bars(raw_close, open_, close, low, vols))
+    assert not signals.any()
+
+
 def test_limit_up_shakeout_false_without_limit_up():
     raw_close = [10.0, 10.5, 10.0]
     close = [10.0, 10.5, 10.0]
