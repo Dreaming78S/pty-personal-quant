@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from quant.engine import hit_performance
 
@@ -8,13 +9,15 @@ def make_market():
     rows = []
     for d in dates:
         rows.append({"ts_code": "600000.SH", "trade_date": d,
-                     "open": 10.0, "close": 10.0})
+                     "open": 10.0, "close": 10.0,
+                     "raw_open": 10.0, "raw_close": 10.0})
+    # 600002 后复权与界面价因复权因子差 2 倍；收益率必须用 raw_*（界面价）
     rows.append({"ts_code": "600002.SH", "trade_date": "20260105",
-                 "open": 20.0, "close": 20.0})
+                 "open": 20.0, "close": 20.0, "raw_open": 10.0, "raw_close": 10.0})
     rows.append({"ts_code": "600002.SH", "trade_date": "20260106",
-                 "open": 20.0, "close": 21.0})
+                 "open": 20.0, "close": 21.0, "raw_open": 10.0, "raw_close": 10.4})
     rows.append({"ts_code": "600002.SH", "trade_date": "20260107",
-                 "open": 21.0, "close": 22.0})
+                 "open": 21.0, "close": 22.0, "raw_open": 10.4, "raw_close": 10.8})
     return pd.DataFrame(rows)
 
 
@@ -30,9 +33,10 @@ def test_forward_returns_alignment_and_win_loss():
     assert out.loc["600000.SH", "sell_date"] == "20260107"
     assert out.loc["600000.SH", "ret_pct"] == 0.0
     assert out.loc["600000.SH", "status"] == "ok"
-    assert out.loc["600002.SH", "buy_open"] == 20.0
-    assert out.loc["600002.SH", "sell_close"] == 22.0
-    assert out.loc["600002.SH", "ret_pct"] == 10.0
+    # 用界面价：买入 10.0、卖出 10.8 → 8%；若误用后复权会得 (22-20)/20=10%
+    assert out.loc["600002.SH", "buy_open"] == 10.0
+    assert out.loc["600002.SH", "sell_close"] == 10.8
+    assert out.loc["600002.SH", "ret_pct"] == pytest.approx(8.0)
 
 
 def test_forward_returns_skips_suspended_and_missing_tail():

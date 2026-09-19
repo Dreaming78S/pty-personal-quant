@@ -8,17 +8,18 @@ BUCKET_NAMES = ("<-5", "-5~-2", "-2~0", "0~2", "2~5", ">5")
 
 
 def forward_returns(market: pd.DataFrame, hits: pd.DataFrame) -> pd.DataFrame:
-    """命中推荐的两日持有收益：T+1 开盘买入、T+2 收盘卖出（后复权价，%）。
+    """命中推荐的两日持有收益：T+1 开盘买入、T+2 收盘卖出（界面实际成交价，%）。
 
-    T 为命中日；T+1/T+2 取交易日历上紧邻的两个交易日（停牌日不占位）。
-    返回列：ts_code, trade_date, buy_date, sell_date, buy_open, sell_close,
-    ret_pct, status（ok / suspended / no_data）。
+    价格取不复权 raw_open/raw_close（行情界面显示的真实价格），持有期内的
+    分红现金不单独计入。T 为命中日；T+1/T+2 取交易日历上紧邻的两个交易日
+    （停牌日不占位）。返回列：ts_code, trade_date, buy_date, sell_date,
+    buy_open, sell_close, ret_pct, status（ok / suspended / no_data）。
     """
     dates = sorted(market["trade_date"].astype(str).unique())
     rank = {d: i for i, d in enumerate(dates)}
     date_of = {i: d for d, i in rank.items()}
 
-    px = market[["ts_code", "trade_date", "open", "close"]].copy()
+    px = market[["ts_code", "trade_date", "raw_open", "raw_close"]].copy()
     px["trade_date"] = px["trade_date"].astype(str)
 
     frame = hits[["ts_code", "trade_date"]].copy()
@@ -27,10 +28,10 @@ def forward_returns(market: pd.DataFrame, hits: pd.DataFrame) -> pd.DataFrame:
     frame["buy_date"] = (frame["_rank"] + BUY_OFFSET).map(date_of)
     frame["sell_date"] = (frame["_rank"] + SELL_OFFSET).map(date_of)
 
-    buy = (px[["ts_code", "trade_date", "open"]]
-           .rename(columns={"trade_date": "buy_date", "open": "buy_open"}))
-    sell = (px[["ts_code", "trade_date", "close"]]
-            .rename(columns={"trade_date": "sell_date", "close": "sell_close"}))
+    buy = (px[["ts_code", "trade_date", "raw_open"]]
+           .rename(columns={"trade_date": "buy_date", "raw_open": "buy_open"}))
+    sell = (px[["ts_code", "trade_date", "raw_close"]]
+            .rename(columns={"trade_date": "sell_date", "raw_close": "sell_close"}))
     frame = frame.merge(buy, on=["ts_code", "buy_date"], how="left")
     frame = frame.merge(sell, on=["ts_code", "sell_date"], how="left")
 
