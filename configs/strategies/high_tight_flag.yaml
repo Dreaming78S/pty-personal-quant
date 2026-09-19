@@ -1,10 +1,9 @@
 strategy: high_tight_flag
 params:
-  lookback: 120
-  min_gain: 0.3
+  momentum_days: 40
+  momentum_ratio: 1.6
   tight_days: 10
-  max_range: 0.08
-  vol_shrink: 0.6
+  tight_ratio: 1.15
+  support_ratio: 0.8
   vol_base_days: 20
-  high_days: 250
-  near_high: 0.05
+  vol_shrink: 0.6
