@@ -33,3 +33,17 @@ def test_run_signature_encodes_non_default_parameters():
         t2_min_count=None, t2_strategies=("turtle_trade",), cum_min_count=1,
         cum_strategies=(), mv_min=0.0, mv_max=50000.0,
     ) == "n1_t1ge1_t2geany-turtle_trade_cumge1"
+
+    assert script._run_signature(
+        hold=1, t1_min_count=2, t1_strategies=(),
+        t2_min_count=1, t2_max_count=1, t2_strategies=("rps_breakout",),
+        cum_min_count=2, cum_max_count=2, cum_strategies=(),
+        mv_min=0.0, mv_max=50000.0,
+    ) == "n1_t1ge2_t2ge1-rps_breakout_t2le1_cumge2_cumle2"
+
+    assert script._run_signature(
+        hold=1, t1_min_count=1, t1_strategies=(),
+        t2_min_count=None, t2_max_count=1, t2_strategies=(),
+        cum_min_count=1, cum_max_count=1, cum_strategies=(),
+        mv_min=0.0, mv_max=50000.0,
+    ) == "n1_t1ge1_t2le1_cumge1_cumle1"

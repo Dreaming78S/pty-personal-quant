@@ -122,6 +122,41 @@ def test_screen_ideas_respects_start_window():
     assert list(out["ts_code"]) == ["600004.SH"]
 
 
+def test_screen_ideas_max_counts():
+    hits = make_hits([
+        ("ma_volume", "600001.SH", "20240103"),
+        ("rps_breakout", "600001.SH", "20240104"),
+        ("turtle_trade", "600002.SH", "20240103"),
+        ("ma_volume", "600002.SH", "20240103"),
+        ("rps_breakout", "600002.SH", "20240104"),
+        ("rps_breakout", "600003.SH", "20240104"),
+    ])
+
+    def codes(**kwargs):
+        out = idea_backtest.screen_ideas(hits, DATES, "20240104", "20240104",
+                                         **kwargs)
+        return sorted(out["ts_code"])
+
+    # n_t2：600001=1、600002=2、600003=0
+    assert codes() == ["600001.SH", "600002.SH", "600003.SH"]
+    assert codes(t2_max_count=1) == ["600001.SH", "600003.SH"]
+    assert codes(t2_max_count=0) == ["600003.SH"]
+    assert codes(t2_min_count=1, t2_max_count=1) == ["600001.SH"]
+    # n_cum：600001=2、600002=3、600003=1
+    assert codes(cum_max_count=2) == ["600001.SH", "600003.SH"]
+    assert codes(cum_min_count=2, cum_max_count=2) == ["600001.SH"]
+
+    with pytest.raises(ValueError):
+        idea_backtest.screen_ideas(hits, DATES, "20240104", "20240104",
+                                   t2_min_count=2, t2_max_count=1)
+    with pytest.raises(ValueError):
+        idea_backtest.screen_ideas(hits, DATES, "20240104", "20240104",
+                                   cum_min_count=3, cum_max_count=2)
+    with pytest.raises(ValueError):
+        idea_backtest.screen_ideas(hits, DATES, "20240104", "20240104",
+                                   cum_max_count=-1)
+
+
 def test_screen_ideas_rejects_invalid_counts():
     hits = make_hits([("ma_volume", "600001.SH", "20240102")])
 
