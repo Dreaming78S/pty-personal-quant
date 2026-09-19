@@ -1,0 +1,8 @@
+strategy: rise_shrink_pullback
+params:
+  rise_days: 10
+  rise_pct: 20.0
+  pullback_days: 3
+  min_bearish: 2
+  vol_shrink: 0.85
+  bearish_mode: close_below_open

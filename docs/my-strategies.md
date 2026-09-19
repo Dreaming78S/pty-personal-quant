@@ -22,6 +22,7 @@
 | 4 | `limit_up_shakeout` | 昨日涨停、今日放量收阴不破昨收 | 3 | 成交额 | `limit_pct=0.095`, `vol_ratio=2.0` |
 | 5 | `uptrend_limit_down` | 上升趋势中放量跌停（错杀） | 61 | 成交额 | `ma_short=20`, `ma_long=60`, `limit_pct=0.095`, `vol_ma=20`, `vol_ratio=2.0` |
 | 6 | `rps_breakout` | 120 日 RPS≥90 且接近 120 日高点 | 121 | RPS 值 | `window=120`, `rps_threshold=90`, `high_ratio=0.9`, `high_min_bars=60` |
+| 7 | `rise_shrink_pullback` | 近 M 日涨超 X% 后缩量阴线回调 | 11 | 成交额 | `rise_days=10`, `rise_pct=25.0`, `pullback_days=3`, `min_bearish=2`, `vol_shrink=0.80`, `bearish_mode=close_below_open` |
 
 > 注：`ma_volume` 当前 yaml 已将 `vol_ma` 调为 `10`、`vol_ratio` 调为 `1.8`（覆盖代码默认值），其余策略 yaml 与默认值一致。
 
@@ -219,6 +220,42 @@
 - `rps_threshold` 调低（如 80）→ 入选面扩大到前 20%，信号显著增多。
 - `high_ratio` 调低 → 允许离高点更远（突破确认更松）。
 - `high_min_bars` 调大 → 上市初期股票被更严格地排除。
+
+---
+
+## 7. RiseShrinkPullback — 上涨后缩量回调
+
+**定位**：捕捉强势上涨后的缩量回调（洗盘），要求前期涨幅足够大、近端出现阴线但量能明显萎缩。
+
+### 参数
+
+| 参数 | 类型 | 默认 | 含义 | 说明 |
+|---|---|---|---|---|
+| `rise_days` (M) | int | 10 | 涨幅回看窗口（交易日） | 必须大于 `pullback_days`，否则参数校验直接报错 |
+| `rise_pct` (X) | float | 25.0 | 涨幅阈值（百分数） | `close(T)/close(T-M)-1 > X%`，**严格大于** |
+| `pullback_days` (P) | int | 3 | 阴线统计与近端均量窗口（交易日） | |
+| `min_bearish` (L) | int | 2 | 近 P 日中至少几根阴线 | `≥`，恰好 L 根也命中 |
+| `vol_shrink` | float | 0.80 | 缩量比例 | 近 P 日均量 < `vol_shrink ×` 近 M 日均量，**严格小于** |
+| `bearish_mode` | str | `close_below_open` | 阴线判定模式 | `close_below_open` = 收盘<开盘（实体阴线）；`close_below_prev_close` = 收盘<昨收（下跌日） |
+
+### 选股条件（T 日，窗口均含当日，后复权价）
+
+1. **涨幅**：`close(T)/close(T-M) - 1 > rise_pct/100`
+2. **阴线数**：近 P 根 K 线中阴线数 ≥ `min_bearish`
+3. **缩量**：`mean(vol[T-P+1 .. T]) < vol_shrink × mean(vol[T-M+1 .. T])`（M > P）
+
+### 说明
+
+- 暖机 = `rise_days + 1` = 11。
+- 排序：成交额。
+- 两种阴线模式的区别：某日收出小阳线（`close > open`）但低于昨收时，`close_below_open` 不算阴线，`close_below_prev_close` 算。
+- 命中表只记录 2026-01-01 起的样本（`prev_hit/hit_3d/hit_5d/hit_10d/streak` 等历史列也只反映该区间内的命中）。
+
+### 调参影响
+
+- `rise_pct` 调大 → 要求前期涨幅更陡；`vol_shrink` 调小 → 要求缩量更极致。
+- `min_bearish` 调大（如 = P）→ 要求近 P 日全部收阴。
+- 改完 yaml 后需重算命中表（`uv run quant hits update -s rise_shrink_pullback --from-date 2026-01-01`）。
 
 ---
 

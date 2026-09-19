@@ -363,13 +363,15 @@ def test_migrate_adds_missing_column(monkeypatch):
     assert "AFTER `circ_mv`" in executed[0]
 
 
-def test_hit_tables_cover_six_strategies():
+def test_hit_tables_cover_seven_strategies():
     assert schemas.HIT_STRATEGIES == ("ma_volume", "turtle_trade",
                                       "high_tight_flag", "limit_up_shakeout",
-                                      "uptrend_limit_down", "rps_breakout")
+                                      "uptrend_limit_down", "rps_breakout",
+                                      "rise_shrink_pullback")
     assert set(schemas.HIT_TABLES) == {
         "hit_ma_volume", "hit_turtle_trade", "hit_high_tight_flag",
         "hit_limit_up_shakeout", "hit_uptrend_limit_down", "hit_rps_breakout",
+        "hit_rise_shrink_pullback",
     }
 
 

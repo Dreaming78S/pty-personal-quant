@@ -78,6 +78,7 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 | `limit_up_shakeout` | 昨日涨停、今日放量收阴不破昨收 | 成交额 |
 | `uptrend_limit_down` | 上升趋势中放量跌停（错杀） | 成交额 |
 | `rps_breakout` | 120 日 RPS≥90 且接近 120 日高点 | RPS |
+| `rise_shrink_pullback` | 近 10 日涨超 25% 后缩量阴线回调 | 成交额 |
 
 - `configs/strategies/<策略名>.yaml`：策略参数（CLI 会自动读取同名文件）
 - `configs/backtest/default.yaml`：回测默认参数（费用、调仓、持仓数、股票池过滤等）；`top_n` 留空 = 等权买入当日全部信号股，填数字（或 `-n`，`0` 表示全部）则限制持仓数量
