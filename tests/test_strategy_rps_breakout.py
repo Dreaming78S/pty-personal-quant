@@ -105,3 +105,75 @@ def test_rps_breakout_defaults_and_warmup():
     assert s.p.high_ratio == 0.90
     assert s.p.high_min_bars == 60
     assert s.warmup_days == 121
+
+
+def _rows(code, entries, suspended=False):
+    return [{
+        "ts_code": code, "trade_date": d,
+        "open": c, "high": h, "low": c, "close": c, "raw_close": c,
+        "vol": 100.0, "amount": 1000.0, "adj_factor": 1.0,
+        "suspended": suspended, "is_st": False, "is_new": False, "board": "main",
+    } for d, c, h in entries]
+
+
+def test_rps_reference_is_trading_date_not_row_count():
+    # B 在 20240103 停牌：窗口 3 的基准日应为 20240103，B 当日无 120 日涨幅 → 不参与排名
+    market = pd.DataFrame(
+        _rows("600000.SH", [("20240101", 1.0, 1.0), ("20240102", 1.0, 1.0),
+                            ("20240103", 1.0, 1.0), ("20240104", 1.0, 1.0),
+                            ("20240105", 1.0, 1.0), ("20240106", 2.0, 2.0)])
+        + _rows("600001.SH", [("20240101", 1.0, 1.0), ("20240102", 1.0, 1.0),
+                              ("20240104", 1.0, 1.0), ("20240105", 1.0, 1.0),
+                              ("20240106", 5.0, 5.0)])
+    )
+    s = get_strategy("rps_breakout", **PARAMS)
+
+    signals = selection.compute_signals(s, market)
+    last = signals[signals["trade_date"] == "20240106"].set_index("ts_code")
+
+    assert pd.isna(last.loc["600001.SH", "score"])
+    assert not last.loc["600001.SH", "signal"]
+    assert last.loc["600000.SH", "score"] == 100.0
+
+
+def test_rps_high_window_uses_trading_dates():
+    # C 缺 20240105：窗口 3 的高点区间应为 20240104/06 两根（除息日无行情不计入）
+    market = pd.DataFrame(
+        _rows("600000.SH", [("20240101", 1.0, 1.0), ("20240102", 1.0, 1.0),
+                            ("20240103", 1.0, 1.0), ("20240104", 1.0, 1.0),
+                            ("20240105", 1.0, 1.0), ("20240106", 1.0, 1.0)])
+        + _rows("600001.SH", [("20240101", 1.0, 1.0), ("20240102", 1.0, 1.0),
+                              ("20240103", 1.0, 100.0), ("20240104", 1.0, 1.0),
+                              ("20240106", 10.4, 10.5)])
+    )
+    s = get_strategy("rps_breakout", **PARAMS)
+
+    signals = selection.compute_signals(s, market)
+    last = signals[signals["trade_date"] == "20240106"].set_index("ts_code")
+
+    # 按行滚动会把停牌前的 100 计入窗口；按交易日窗口只取 20240104/06
+    assert last.loc["600001.SH", "score"] == 100.0
+    assert last.loc["600001.SH", "signal"]
+
+
+def test_rps_short_panel_with_enough_warmup_matches_full_panel():
+    dates = ["20240101", "20240102", "20240103", "20240104",
+             "20240105", "20240106"]
+    market = pd.DataFrame(
+        _rows("600000.SH", [(d, c, c) for d, c in
+                            zip(dates, [1, 1, 1, 1.2, 1.3, 2.0])])
+        + _rows("600001.SH", [(d, c, c) for d, c in
+                              zip(dates, [1, 1, 1, 1.1, 1.1, 1.5])])
+        + _rows("600002.SH", [(d, c, c) for d, c in
+                              zip(dates, [1, 1, 1, 0.9, 0.8, 1.1])])
+    )
+    s = get_strategy("rps_breakout", **PARAMS)
+
+    full = selection.compute_signals(s, market)
+    tail = selection.compute_signals(
+        s, market[market["trade_date"] >= "20240103"])
+
+    common_full = full[full["trade_date"] == "20240106"].set_index("ts_code")
+    common_tail = tail[tail["trade_date"] == "20240106"].set_index("ts_code")
+    pd.testing.assert_series_equal(common_full["signal"], common_tail["signal"])
+    pd.testing.assert_series_equal(common_full["score"], common_tail["score"])
