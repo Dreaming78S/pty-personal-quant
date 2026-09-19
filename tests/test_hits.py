@@ -81,6 +81,7 @@ def patch_deps(monkeypatch, watermark=None, dates=("20240103", "20240104"),
                                         "600002.SH"],
                             "industry": ["银行", "钢铁", "电气", "地产"]}))
     monkeypatch.setattr(hits.loader, "resolve_trade_date", lambda date=None: latest)
+    monkeypatch.setattr(hits.loader, "history_warmup_days", lambda start: 123)
     return captured
 
 
@@ -175,13 +176,14 @@ def test_fill_hits_history_columns(monkeypatch):
     assert second["streak"] == 2
 
 
-def test_fill_hits_extends_panel_for_history(monkeypatch):
+def test_fill_hits_loads_full_history_panel(monkeypatch):
     captured = patch_deps(monkeypatch)
 
     hits.fill_hits("hits_dummy", from_date="20240103", to_date="20240104")
 
-    _, kwargs = captured["loads"][0]
-    assert kwargs["warmup_days"] == 2 + hits.HISTORY_DAYS
+    args, kwargs = captured["loads"][0]
+    assert args == ("20240103", "20240104")
+    assert kwargs["warmup_days"] == 123
 
 
 def test_fill_hits_replaces_explicit_window(monkeypatch):

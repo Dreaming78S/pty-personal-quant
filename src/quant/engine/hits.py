@@ -12,7 +12,6 @@ from quant.engine.loader import UniverseFilters
 from quant.strategies.base import get_strategy, list_strategies, load_strategy_config
 
 DEFAULT_START = "20240101"
-HISTORY_DAYS = 10
 _WINDOWS = (3, 5, 10)
 DEFAULT_FILTERS = UniverseFilters(allowed_boards=("main",))
 STRATEGY_CONFIG_DIR = Path("configs/strategies")
@@ -117,9 +116,10 @@ def fill_hits(strategy: str = "all", from_date: str | None = None,
     bounds = [d for _, _, _, dates in plans for d in (dates[:1] + dates[-1:])]
     market: pd.DataFrame | None = None
     if bounds:
-        max_warmup = max(strat.warmup_days for _, strat in strategies)
+        # 行窗口指标依赖累计行数：一律加载完整历史，保证结果与水位线/面板无关
         market = loader.load_market_data(
-            min(bounds), max(bounds), warmup_days=max_warmup + HISTORY_DAYS)
+            min(bounds), max(bounds),
+            warmup_days=loader.history_warmup_days(min(bounds)))
         market["trade_date"] = market["trade_date"].astype(str)
 
     rank_of: dict[str, int] = {}
