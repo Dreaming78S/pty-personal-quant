@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     tushare_token: str
     feishu_webhook_url: str | None = None
     feishu_webhook_secret: str | None = None
+    feishu_app_id: str | None = None
+    feishu_app_secret: str | None = None
+    deepseek_api_key: str | None = None
+    deepseek_base_url: str = "https://api.deepseek.com"
+    deepseek_model: str = "deepseek-flash"
 
 
 @lru_cache(maxsize=1)
