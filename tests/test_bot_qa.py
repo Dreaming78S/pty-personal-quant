@@ -46,6 +46,15 @@ def test_render_rows_truncates_by_rows():
     assert len(text.splitlines()) == 5
 
 
+def test_render_rows_truncates_by_chars():
+    frame = pd.DataFrame({"a": ["x" * 100]})
+
+    text = qa.render_rows(frame, max_chars=10)
+
+    assert "结果过长已截断" in text
+    assert text.startswith("a\nxxxxxxxx")
+
+
 def test_render_rows_handles_empty():
     assert qa.render_rows(pd.DataFrame()) == "（无数据行）"
 
