@@ -1,10 +1,15 @@
 import json
+import warnings
 
 import pytest
-from lark_oapi.api.im.v1 import P2ImMessageReceiveV1
 
-from quant.bot import feishu
-from quant.bot.qa import Answer
+warnings.filterwarnings(
+    "ignore", category=DeprecationWarning, module=r"lark_oapi\..*")
+
+from lark_oapi.api.im.v1 import P2ImMessageReceiveV1  # noqa: E402
+
+from quant.bot import feishu  # noqa: E402
+from quant.bot.qa import Answer  # noqa: E402
 
 
 def make_event(text="@_user_1 博敏电子最近几天命中策略的情况",
@@ -88,6 +93,14 @@ def test_parse_event_ignores_broken_content():
     assert question.question == ""
 
 
+def test_parse_event_handles_non_object_json():
+    for content in ("123", "null", "[]", '"text"'):
+        question = feishu.parse_event(make_event(content=content))
+
+        assert question is not None
+        assert question.question == ""
+
+
 def test_reply_card_sends_interactive_card():
     client = FakeClient()
     card = {"header": {"title": {"tag": "plain_text", "content": "t"}},
@@ -122,6 +135,21 @@ def test_service_answers_and_replies(monkeypatch):
     card = client.message_api.requests[0]
     assert card["header"]["title"]["content"] == "【问数】博敏电子最近几天命中策略的情况"
     assert "<at id=ou_1></at>" in card["elements"][0]["text"]["content"]
+
+
+def test_service_does_not_at_in_private_chat(monkeypatch):
+    client = FakeClient()
+    service = feishu.BotService(
+        client, llm=object(), runner=lambda sql: None,
+        reply=lambda c, mid, card: c.message_api.requests.append(card))
+    monkeypatch.setattr(feishu.qa, "answer",
+                        lambda question, llm, runner: Answer("命中 1 次", "SELECT 1", 1, True))
+
+    service.handle_event(make_event(chat_type="p2p"))
+    service._pool.shutdown(wait=True)
+
+    card = client.message_api.requests[0]
+    assert "<at id=" not in card["elements"][0]["text"]["content"]
 
 
 def test_service_hints_on_empty_question():
@@ -171,4 +199,14 @@ def test_run_bot_requires_credentials(monkeypatch):
                                                "deepseek_api_key": None})())
 
     with pytest.raises(ValueError, match="FEISHU_APP_ID"):
+        feishu.run_bot()
+
+
+def test_run_bot_requires_deepseek_key(monkeypatch):
+    monkeypatch.setattr(feishu, "get_settings",
+                        lambda: type("S", (), {"feishu_app_id": "cli_x",
+                                               "feishu_app_secret": "sec",
+                                               "deepseek_api_key": None})())
+
+    with pytest.raises(ValueError, match="DEEPSEEK_API_KEY"):
         feishu.run_bot()

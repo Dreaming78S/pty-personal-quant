@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
@@ -54,8 +55,11 @@ def parse_event(data: P2ImMessageReceiveV1) -> Question | None:
     if message.message_type != "text":
         return None
     try:
-        text = json.loads(message.content or "{}").get("text", "")
+        parsed = json.loads(message.content or "{}")
     except json.JSONDecodeError:
+        parsed = {}
+    text = parsed.get("text", "") if isinstance(parsed, dict) else ""
+    if not isinstance(text, str):
         text = ""
     sender_id = event.sender.sender_id
     return Question(
@@ -96,14 +100,16 @@ class BotService:
         self._reply = reply
         self._pool = ThreadPoolExecutor(max_workers=workers)
         self._seen: OrderedDict[str, None] = OrderedDict()
+        self._lock = threading.Lock()
 
     def _is_new(self, message_id: str) -> bool:
-        if message_id in self._seen:
-            return False
-        self._seen[message_id] = None
-        while len(self._seen) > SEEN_MESSAGE_LIMIT:
-            self._seen.popitem(last=False)
-        return True
+        with self._lock:
+            if message_id in self._seen:
+                return False
+            self._seen[message_id] = None
+            while len(self._seen) > SEEN_MESSAGE_LIMIT:
+                self._seen.popitem(last=False)
+            return True
 
     def handle_event(self, data: P2ImMessageReceiveV1) -> None:
         question = parse_event(data)
