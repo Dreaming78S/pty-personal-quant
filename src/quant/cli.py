@@ -3,8 +3,10 @@ import typer
 app = typer.Typer(help="A股量化选股与回测系统", no_args_is_help=True)
 data_app = typer.Typer(help="数据管理", no_args_is_help=True)
 hits_app = typer.Typer(help="策略历史命中", no_args_is_help=True)
+bot_app = typer.Typer(help="飞书问数机器人", no_args_is_help=True)
 app.add_typer(data_app, name="data")
 app.add_typer(hits_app, name="hits")
+app.add_typer(bot_app, name="bot")
 
 
 @data_app.command("init-db")
@@ -275,3 +277,42 @@ def backtest_cmd(
     for key, value in metric_values.items():
         typer.echo(f"  {key}: {value:.4f}" if isinstance(value, float) else f"  {key}: {value}")
     typer.echo(f"报告目录：{folder}")
+
+
+@bot_app.command("serve")
+def bot_serve() -> None:
+    """启动飞书长连接问数机器人（前台常驻，Ctrl+C 退出）。"""
+    from quant.bot import feishu
+    from quant.utils.logging import setup_logging
+
+    setup_logging()
+    try:
+        feishu.run_bot()
+    except ValueError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1) from exc
+
+
+@bot_app.command("ask")
+def bot_ask(question: str = typer.Argument(..., help="自然语言问题")) -> None:
+    """本地跑一遍问答链路（不连飞书），打印回答与 SQL。"""
+    from quant.bot import qa
+    from quant.bot.llm import DeepSeekClient
+    from quant.bot.runner import run_readonly
+    from quant.config import get_settings
+    from quant.utils.logging import setup_logging
+
+    setup_logging()
+    settings = get_settings()
+    if not settings.deepseek_api_key:
+        typer.echo("未配置 DEEPSEEK_API_KEY（.env）")
+        raise typer.Exit(code=1)
+    llm = DeepSeekClient(settings.deepseek_api_key, settings.deepseek_base_url,
+                         settings.deepseek_model)
+    result = qa.answer(question, llm, run_readonly)
+    typer.echo(result.text)
+    if result.sql:
+        typer.echo(f"\nSQL：{result.sql}")
+    typer.echo(f"返回 {result.row_count} 行（{'成功' if result.ok else '失败'}）")
+    if not result.ok:
+        raise typer.Exit(code=1)
