@@ -388,6 +388,8 @@ def test_build_co_message_checks_all_strategy_watermarks(monkeypatch):
     monkeypatch.setattr(notify.ingest, "get_watermark",
                         lambda table: ("20260918" if table == "hit_ma_volume"
                                        else "20260917"))
+    monkeypatch.setattr(notify.db, "read_df",
+                        lambda sql, params=None: pd.DataFrame())
 
     with pytest.raises(ValueError, match="hits update"):
         notify.build_co_message("20260918")
