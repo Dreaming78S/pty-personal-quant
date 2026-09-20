@@ -119,3 +119,37 @@ def test_validate_tightens_mysql_offset_comma_limit():
     sql = validate_sql("SELECT * FROM daily LIMIT 10, 5000", allowed=ALLOWED)
 
     assert sql.endswith("LIMIT 10, 200")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM (daily, evil)",
+    "SELECT * FROM daily, (evil)",
+    "SELECT * FROM (evil)",
+    "WITH secret AS (SELECT 1) SELECT * FROM otherdb.secret",
+    "WITH s AS (SELECT 1) SELECT * FROM daily, otherdb.s",
+])
+def test_validate_rejects_unknown_table_in_parenthesized_lists(sql):
+    with pytest.raises(SqlRejected, match="不允许查询的表"):
+        validate_sql(sql, allowed=ALLOWED)
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM (daily)",
+    "SELECT * FROM (daily, stock_basic)",
+    "SELECT * FROM daily, (stock_basic)",
+])
+def test_validate_accepts_parenthesized_table_lists(sql):
+    assert validate_sql(sql, allowed=ALLOWED).endswith("LIMIT 200")
+
+
+def test_validate_accepts_other_schema_qualified_allowed_table():
+    # 有意折中：非系统库的限定名取最后一段比对白名单，执行层再用只读账号兜底。
+    assert validate_sql("SELECT * FROM otherdb.daily",
+                        allowed=ALLOWED).endswith("LIMIT 200")
+
+
+def test_validate_accepts_table_modifier_parentheses():
+    assert validate_sql("SELECT * FROM daily USE INDEX (i)",
+                        allowed=ALLOWED).endswith("LIMIT 200")
+    assert validate_sql("SELECT * FROM daily PARTITION (p0)",
+                        allowed=ALLOWED).endswith("LIMIT 200")

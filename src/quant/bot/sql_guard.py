@@ -51,6 +51,8 @@ _JOIN_MODIFIERS = frozenset({
     "straight_join", "lateral", "apply",
 })
 
+_SUBQUERY_STARTS = frozenset({"select", "with"})
+
 _SKIPPED_KINDS = frozenset({"space", "line_comment", "block_comment"})
 
 
@@ -112,28 +114,32 @@ def _read_qualified(tokens: list[tuple[str, str, int]], start: int
     return segments, index
 
 
-def _scan_from_clause(tokens: list[tuple[str, str, int]], start: int
-                      ) -> list[tuple[str, ...]]:
-    """扫描一个 FROM/JOIN 起的表引用列表，直到底层子句边界。"""
+def _scan_table_list(tokens: list[tuple[str, str, int]], start: int, end: int
+                     ) -> list[tuple[str, ...]]:
+    """扫描 tokens[start:end] 中的表引用列表（逗号连表、JOIN、括号列表）。"""
     refs: list[tuple[str, ...]] = []
-    count = len(tokens)
-    if start >= count:
-        return refs
-    clause_depth = tokens[start - 1][2] if start > 0 else tokens[start][2]
     index = start
     expect_table = True
-    while index < count:
-        kind, value, depth = tokens[index]
+    while index < end:
+        kind, value, _ = tokens[index]
         if kind == "punct" and value == ")":
-            if depth == clause_depth:
-                break
-            index += 1
-            continue
+            break
         if kind == "punct" and value == "(":
-            following = _skip_balanced(tokens, index)
-            if following is None:
+            close = _skip_balanced(tokens, index)
+            if close is None or close > end:
                 break
-            index = following
+            if not expect_table:
+                index = close
+                continue
+            first = index + 1
+            inner_end = close - 1
+            if (first < inner_end and tokens[first][0] == "word"
+                    and tokens[first][1].lower() in _SUBQUERY_STARTS):
+                index = close
+                expect_table = False
+                continue
+            refs.extend(_scan_table_list(tokens, first, inner_end))
+            index = close
             expect_table = False
             continue
         if kind == "punct" and value == ",":
@@ -217,7 +223,7 @@ def _analyze(body: str) -> tuple[set[str], list[tuple[str, ...]]]:
     refs: list[tuple[str, ...]] = []
     for index, (kind, value, _) in enumerate(tokens):
         if kind == "word" and value.lower() in ("from", "join"):
-            refs.extend(_scan_from_clause(tokens, index + 1))
+            refs.extend(_scan_table_list(tokens, index + 1, len(tokens)))
     return cte_names, refs
 
 
@@ -243,7 +249,9 @@ def validate_sql(sql: str, allowed: set[str] | None = None,
                      if segment.lower() in SYSTEM_SCHEMAS})
     if system:
         raise SqlRejected(f"不允许查询的表：{', '.join(system)}")
-    names = {segments[-1].lower() for segments in refs if segments} - cte_names
+    plain_names = {segments[0].lower() for segments in refs if len(segments) == 1}
+    qualified_names = {segments[-1].lower() for segments in refs if len(segments) > 1}
+    names = (plain_names - cte_names) | qualified_names
     whitelist = set(allowed) if allowed else set(schema.allowed_tables())
     unknown = sorted(names - whitelist)
     if unknown:
