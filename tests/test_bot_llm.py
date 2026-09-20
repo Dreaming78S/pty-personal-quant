@@ -1,3 +1,4 @@
+import io
 import json
 import urllib.error
 
@@ -85,9 +86,48 @@ def test_complete_raises_llm_error_on_client_error(monkeypatch):
     def fake_urlopen(request, timeout=None):
         raise urllib.error.HTTPError(
             request.full_url, 400, "Bad Request", {},
-            type("B", (), {"read": lambda self: b'{"error":"bad model"}'})())
+            io.BytesIO(b'{"error":"bad model"}'))
 
     monkeypatch.setattr("quant.bot.llm.urllib.request.urlopen", fake_urlopen)
 
     with pytest.raises(LlmError, match="400"):
         DeepSeekClient("sk-x").complete([])
+
+
+def test_complete_retries_server_error_then_raises(monkeypatch):
+    calls = {"n": 0}
+    sleeps = []
+
+    def fake_urlopen(request, timeout=None):
+        calls["n"] += 1
+        raise urllib.error.HTTPError(
+            request.full_url, 500, "Server Error", {},
+            io.BytesIO(b'{"error":"upstream"}'))
+
+    monkeypatch.setattr("quant.bot.llm.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("quant.bot.llm.time.sleep", lambda s: sleeps.append(s))
+
+    with pytest.raises(LlmError, match="500"):
+        DeepSeekClient("sk-x").complete([])
+    assert calls["n"] == 3
+    assert sleeps == [1.0, 1.0]
+
+
+def test_complete_retries_server_error_then_succeeds(monkeypatch):
+    calls = {"n": 0}
+    sleeps = []
+
+    def fake_urlopen(request, timeout=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise urllib.error.HTTPError(
+                request.full_url, 500, "Server Error", {},
+                io.BytesIO(b'{"error":"upstream"}'))
+        return FakeResponse({"choices": [{"message": {"content": "ok"}}]})
+
+    monkeypatch.setattr("quant.bot.llm.urllib.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("quant.bot.llm.time.sleep", lambda s: sleeps.append(s))
+
+    assert DeepSeekClient("sk-x").complete([]) == "ok"
+    assert calls["n"] == 2
+    assert sleeps == [1.0]
