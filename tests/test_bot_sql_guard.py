@@ -63,3 +63,31 @@ def test_validate_rejects_unknown_table():
 def test_validate_uses_schema_whitelist_by_default():
     with pytest.raises(SqlRejected):
         validate_sql("SELECT * FROM some_other_table")
+
+
+def test_validate_rejects_comma_joined_unknown_table():
+    with pytest.raises(SqlRejected, match="不允许查询的表"):
+        validate_sql("SELECT * FROM daily, evil", allowed=ALLOWED)
+
+
+def test_validate_rejects_comma_joined_unknown_table_with_where():
+    with pytest.raises(SqlRejected, match="不允许查询的表"):
+        validate_sql("SELECT * FROM daily, evil WHERE close > 1", allowed=ALLOWED)
+
+
+def test_validate_rejects_comma_joined_system_schema():
+    with pytest.raises(SqlRejected, match="不允许查询的表"):
+        validate_sql("SELECT * FROM information_schema.tables, daily", allowed=ALLOWED)
+
+
+def test_validate_accepts_comma_joined_allowed_tables_with_aliases():
+    sql = validate_sql("SELECT * FROM daily d, stock_basic b", allowed=ALLOWED)
+
+    assert sql.endswith("LIMIT 200")
+
+
+def test_validate_accepts_select_list_and_string_literal_commas():
+    assert validate_sql("SELECT ts_code, close FROM daily",
+                        allowed=ALLOWED).endswith("LIMIT 200")
+    assert validate_sql("SELECT * FROM daily WHERE name LIKE '%a,b%'",
+                        allowed=ALLOWED).endswith("LIMIT 200")
