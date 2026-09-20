@@ -25,9 +25,17 @@ def parse_completion(payload: dict) -> str:
         message = payload["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
         raise LlmError(f"大模型响应结构异常：{payload}") from exc
-    text = (message.get("content") or "").strip()
+    if not isinstance(message, dict):
+        raise LlmError(f"大模型响应结构异常：{payload}")
+    content = message.get("content")
+    reasoning = message.get("reasoning_content")
+    if content is not None and not isinstance(content, str):
+        raise LlmError(f"大模型响应结构异常：{payload}")
+    if reasoning is not None and not isinstance(reasoning, str):
+        raise LlmError(f"大模型响应结构异常：{payload}")
+    text = (content or "").strip()
     if not text:
-        text = (message.get("reasoning_content") or "").strip()
+        text = (reasoning or "").strip()
     if not text:
         raise LlmError("大模型返回了空内容（可能 max_tokens 不足）")
     return text
@@ -67,6 +75,8 @@ class DeepSeekClient:
                     raise LlmError(
                         f"大模型接口返回 {exc.code}：{detail}") from exc
                 last_error = f"{exc.code}：{detail}"
+            except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+                raise LlmError(f"大模型响应解析失败：{exc}") from exc
             except (urllib.error.URLError, TimeoutError, ConnectionError,
                     ssl.SSLError) as exc:
                 last_error = str(exc)
