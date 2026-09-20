@@ -48,8 +48,12 @@ _CLAUSE_BOUNDARIES = frozenset({
 
 _JOIN_MODIFIERS = frozenset({
     "left", "right", "inner", "outer", "full", "cross", "natural",
-    "straight_join", "lateral", "apply",
+    "lateral", "apply",
 })
+
+_JOIN_KEYWORDS = frozenset({"join", "straight_join"})
+
+_FROM_ANCHORS = frozenset({"from"}) | _JOIN_KEYWORDS
 
 _SUBQUERY_STARTS = frozenset({"select", "with"})
 
@@ -152,7 +156,7 @@ def _scan_table_list(tokens: list[tuple[str, str, int]], start: int, end: int
             keyword = value.lower()
             if keyword in _CLAUSE_BOUNDARIES:
                 break
-            if keyword == "join":
+            if keyword in _JOIN_KEYWORDS:
                 expect_table = True
                 index += 1
                 continue
@@ -222,7 +226,7 @@ def _analyze(body: str) -> tuple[set[str], list[tuple[str, ...]]]:
     cte_names = _cte_names(tokens)
     refs: list[tuple[str, ...]] = []
     for index, (kind, value, _) in enumerate(tokens):
-        if kind == "word" and value.lower() in ("from", "join"):
+        if kind == "word" and value.lower() in _FROM_ANCHORS:
             refs.extend(_scan_table_list(tokens, index + 1, len(tokens)))
     return cte_names, refs
 

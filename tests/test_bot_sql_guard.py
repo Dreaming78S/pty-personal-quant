@@ -153,3 +153,29 @@ def test_validate_accepts_table_modifier_parentheses():
                         allowed=ALLOWED).endswith("LIMIT 200")
     assert validate_sql("SELECT * FROM daily PARTITION (p0)",
                         allowed=ALLOWED).endswith("LIMIT 200")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM daily STRAIGHT_JOIN evil",
+    "SELECT * FROM daily NATURAL JOIN evil",
+    "SELECT * FROM daily STRAIGHT_JOIN stock_basic "
+    "ON daily.ts_code = stock_basic.ts_code, evil",
+])
+def test_validate_rejects_unknown_table_across_join_variants(sql):
+    with pytest.raises(SqlRejected, match="不允许查询的表"):
+        validate_sql(sql, allowed=ALLOWED)
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM daily STRAIGHT_JOIN stock_basic "
+    "ON daily.ts_code = stock_basic.ts_code",
+    "SELECT * FROM daily NATURAL JOIN stock_basic",
+    "SELECT * FROM daily NATURAL LEFT JOIN stock_basic",
+    "SELECT * FROM daily INNER JOIN stock_basic ON daily.ts_code = stock_basic.ts_code",
+    "SELECT * FROM daily CROSS JOIN stock_basic",
+    "SELECT * FROM daily LEFT OUTER JOIN stock_basic ON daily.ts_code = stock_basic.ts_code",
+    "SELECT * FROM daily RIGHT JOIN stock_basic ON daily.ts_code = stock_basic.ts_code",
+    "SELECT * FROM daily FULL JOIN stock_basic ON daily.ts_code = stock_basic.ts_code",
+])
+def test_validate_accepts_join_variants_with_allowed_tables(sql):
+    assert validate_sql(sql, allowed=ALLOWED).endswith("LIMIT 200")
