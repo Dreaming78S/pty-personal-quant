@@ -42,6 +42,20 @@ uv run quant notify          # 4. 飞书推送当日卡片（可选）
   schtasks /Query /TN "MyAStockQuant_DailyUpdate" /V /FO LIST   # 查看状态与下次运行时间
   ```
 
+## 飞书问数机器人（@机器人提问）
+
+在飞书群 @机器人 提问，例如"博敏电子最近几天命中策略的情况"，机器人会用大模型生成只读 SQL、
+查库后以卡片回复（正文为中文总结，末尾附返回行数与 SQL）。
+
+```bash
+uv run quant bot ask "博敏电子最近几天命中策略的情况"   # 本地跑通链路，不连飞书
+uv run quant bot serve                                  # 启动长连接常驻（前台，Ctrl+C 退出）
+```
+
+- 需要 `.env` 配置 `feishu_app_id`、`feishu_app_secret`、`deepseek_api_key`（可选 `deepseek_base_url`、`deepseek_model`）
+- 飞书开放平台需把事件订阅方式设为「长连接」、订阅 `im.message.receive_v1`，并开通 `im:message`（群聊含 `im:message.group_at_msg:readonly`）与 `im:message:send_as_bot` 权限后发布版本
+- 安全边界：只允许单条 `SELECT`/`WITH`、表白名单（`schemas` 中全部表）、`START TRANSACTION READ ONLY`、结果最多 200 行、查询超时 15 秒
+
 ## 策略历史命中（hit_&lt;策略&gt;）
 
 - `uv run quant hits update -s all` 把每个策略历史上每日全部命中的股票写入对应 `hit_<策略名>` 表；默认从 2024-01-01 回填，水位线存 `ingest_log`，可增量续跑、幂等重跑
