@@ -91,3 +91,31 @@ def test_validate_accepts_select_list_and_string_literal_commas():
                         allowed=ALLOWED).endswith("LIMIT 200")
     assert validate_sql("SELECT * FROM daily WHERE name LIKE '%a,b%'",
                         allowed=ALLOWED).endswith("LIMIT 200")
+
+
+def test_validate_accepts_schema_qualified_allowed_table():
+    assert validate_sql("SELECT * FROM quant.daily",
+                        allowed=ALLOWED).endswith("LIMIT 200")
+
+
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM daily JOIN stock_basic "
+    "ON daily.ts_code = stock_basic.ts_code, evil",
+    "SELECT * FROM daily LEFT JOIN stock_basic AS b "
+    "ON b.ts_code = daily.ts_code, evil",
+    "SELECT * FROM daily PARTITION (p0), evil",
+    "SELECT * FROM daily USE INDEX (i), evil",
+    "SELECT * FROM daily, (SELECT 1 WHERE s='(') x, evil",
+    "SELECT * FROM evil WHERE note='WITH evil AS ('",
+    "SELECT * FROM information_schema.tables, daily",
+    "SELECT * FROM quant.evil",
+])
+def test_validate_rejects_unknown_table_in_join_and_comma_lists(sql):
+    with pytest.raises(SqlRejected, match="不允许查询的表"):
+        validate_sql(sql, allowed=ALLOWED)
+
+
+def test_validate_tightens_mysql_offset_comma_limit():
+    sql = validate_sql("SELECT * FROM daily LIMIT 10, 5000", allowed=ALLOWED)
+
+    assert sql.endswith("LIMIT 10, 200")
