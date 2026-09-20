@@ -1,7 +1,22 @@
+from types import SimpleNamespace
+
 import pandas as pd
 import pytest
 
 from quant.bot import runner
+
+
+@pytest.fixture(autouse=True)
+def _fake_settings(monkeypatch):
+    settings = SimpleNamespace(
+        aliyun_rds_host="db.example",
+        aliyun_rds_port=3306,
+        aliyun_rds_user="user",
+        aliyun_rds_passport="secret",
+        aliyun_rds_database="quant",
+    )
+    monkeypatch.setattr(runner, "get_settings", lambda: settings)
+    return settings
 
 
 class FakeCursor:
@@ -77,6 +92,43 @@ def test_run_readonly_closes_connection_on_error(monkeypatch):
     monkeypatch.setattr(runner.pymysql, "connect", lambda **kwargs: fake)
 
     with pytest.raises(RuntimeError, match="boom"):
+        runner.run_readonly("SELECT 1")
+
+    assert fake.closed is True
+
+
+def test_run_readonly_closes_connection_when_rollback_fails(monkeypatch):
+    fake = FakeConnection([{"ts_code": "600360.SH"}])
+
+    def boom():
+        raise RuntimeError("rollback boom")
+
+    fake.rollback = boom
+    monkeypatch.setattr(runner.pymysql, "connect", lambda **kwargs: fake)
+
+    frame = runner.run_readonly("SELECT ts_code FROM daily LIMIT 1")
+
+    assert list(frame.columns) == ["ts_code"]
+    assert fake.closed is True
+
+
+def test_run_readonly_keeps_query_error_when_rollback_fails(monkeypatch):
+    class BoomCursor(FakeCursor):
+        def execute(self, sql, params=None):
+            super().execute(sql, params)
+            if sql.startswith("SELECT"):
+                raise RuntimeError("query boom")
+
+    fake = FakeConnection([])
+    fake.cursor_obj = BoomCursor([])
+
+    def boom():
+        raise RuntimeError("rollback boom")
+
+    fake.rollback = boom
+    monkeypatch.setattr(runner.pymysql, "connect", lambda **kwargs: fake)
+
+    with pytest.raises(RuntimeError, match="query boom"):
         runner.run_readonly("SELECT 1")
 
     assert fake.closed is True

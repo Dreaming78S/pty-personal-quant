@@ -19,20 +19,25 @@ class LlmError(RuntimeError):
     """大模型调用失败。"""
 
 
+def _payload_detail(payload: dict) -> str:
+    """截断响应结构，避免把整个 payload 显示到卡片上。"""
+    return repr(payload)[:200]
+
+
 def parse_completion(payload: dict) -> str:
     """取回答文本；content 为空时回退推理模型的 reasoning_content。"""
     try:
         message = payload["choices"][0]["message"]
     except (KeyError, IndexError, TypeError) as exc:
-        raise LlmError(f"大模型响应结构异常：{payload}") from exc
+        raise LlmError(f"大模型响应结构异常：{_payload_detail(payload)}") from exc
     if not isinstance(message, dict):
-        raise LlmError(f"大模型响应结构异常：{payload}")
+        raise LlmError(f"大模型响应结构异常：{_payload_detail(payload)}")
     content = message.get("content")
     reasoning = message.get("reasoning_content")
     if content is not None and not isinstance(content, str):
-        raise LlmError(f"大模型响应结构异常：{payload}")
+        raise LlmError(f"大模型响应结构异常：{_payload_detail(payload)}")
     if reasoning is not None and not isinstance(reasoning, str):
-        raise LlmError(f"大模型响应结构异常：{payload}")
+        raise LlmError(f"大模型响应结构异常：{_payload_detail(payload)}")
     text = (content or "").strip()
     if not text:
         text = (reasoning or "").strip()

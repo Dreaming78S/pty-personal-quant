@@ -45,7 +45,7 @@ def strip_mentions(text: str) -> str:
 
 
 def parse_event(data: P2ImMessageReceiveV1) -> Question | None:
-    """解析消息事件；非文本消息或机器人自己发的消息返回 None。"""
+    """解析消息事件；非文本、机器人自己发的、群里未 @我的消息返回 None。"""
     event = getattr(data, "event", None)
     if event is None or event.message is None or event.sender is None:
         return None
@@ -61,6 +61,11 @@ def parse_event(data: P2ImMessageReceiveV1) -> Question | None:
     text = parsed.get("text", "") if isinstance(parsed, dict) else ""
     if not isinstance(text, str):
         text = ""
+    if (message.chat_type or "") == "group":
+        mentioned = bool(getattr(message, "mentions", None)) or bool(
+            MENTION_PATTERN.search(message.content or ""))
+        if not mentioned:
+            return None
     sender_id = event.sender.sender_id
     return Question(
         question=strip_mentions(text),

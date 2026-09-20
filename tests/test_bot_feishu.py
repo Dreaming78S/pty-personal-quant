@@ -15,15 +15,21 @@ from quant.bot.qa import Answer  # noqa: E402
 def make_event(text="@_user_1 博敏电子最近几天命中策略的情况",
                *, message_type="text", sender_type="user",
                chat_type="group", message_id="om_1", open_id="ou_1",
-               content=None):
+               content=None, mentions=None):
+    message = {"message_id": message_id, "chat_id": "oc_1",
+               "chat_type": chat_type, "message_type": message_type,
+               "content": content if content is not None
+               else json.dumps({"text": text})}
+    if mentions is None:
+        mentions = [{"key": "@_user_1", "id": {"open_id": "ou_bot"},
+                     "mentioned_type": "bot", "name": "机器人"}]
+    if mentions:
+        message["mentions"] = mentions
     payload = {
         "event": {
             "sender": {"sender_type": sender_type,
                        "sender_id": {"open_id": open_id}},
-            "message": {"message_id": message_id, "chat_id": "oc_1",
-                        "chat_type": chat_type, "message_type": message_type,
-                        "content": content if content is not None
-                        else json.dumps({"text": text})},
+            "message": message,
         }
     }
     return P2ImMessageReceiveV1(payload)
@@ -77,6 +83,30 @@ def test_parse_event_keeps_empty_question():
 
     assert question is not None
     assert question.question == ""
+
+
+def test_parse_event_ignores_group_message_without_mention():
+    event = make_event(text="这是什么股票", mentions=[])
+
+    assert feishu.parse_event(event) is None
+
+
+def test_parse_event_accepts_group_message_with_mention_list_only():
+    event = make_event(text="这是什么股票")
+
+    question = feishu.parse_event(event)
+
+    assert question is not None
+    assert question.question == "这是什么股票"
+
+
+def test_parse_event_allows_private_message_without_mention():
+    event = make_event(text="这是什么股票", chat_type="p2p", mentions=[])
+
+    question = feishu.parse_event(event)
+
+    assert question is not None
+    assert question.question == "这是什么股票"
 
 
 def test_parse_event_ignores_bot_and_non_text():

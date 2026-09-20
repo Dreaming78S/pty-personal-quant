@@ -39,6 +39,20 @@ def test_parse_completion_raises_on_non_string_content():
         parse_completion({"choices": [{"message": {"content": ["x"]}}]})
 
 
+@pytest.mark.parametrize("payload", [
+    {"blob": "Z" * 1000},
+    {"choices": [{"message": "oops" + "Z" * 1000}]},
+    {"choices": [{"message": {"content": ["Z" * 1000]}}]},
+])
+def test_parse_completion_truncates_payload_in_error(payload):
+    with pytest.raises(LlmError) as excinfo:
+        parse_completion(payload)
+
+    message = str(excinfo.value)
+    assert "Z" * 300 not in message
+    assert "Z" * 100 in message
+
+
 class FakeResponse:
     def __init__(self, payload):
         self._body = json.dumps(payload).encode("utf-8")

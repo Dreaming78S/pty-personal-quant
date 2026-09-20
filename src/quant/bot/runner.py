@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 import pymysql
 
 from quant.config import get_settings
 
 SQL_TIMEOUT_SECONDS = 15
+
+logger = logging.getLogger(__name__)
 
 
 def run_readonly(sql: str, timeout: int = SQL_TIMEOUT_SECONDS) -> pd.DataFrame:
@@ -29,6 +33,12 @@ def run_readonly(sql: str, timeout: int = SQL_TIMEOUT_SECONDS) -> pd.DataFrame:
             cur.execute(sql)
             rows = cur.fetchall()
     finally:
-        conn.rollback()
-        conn.close()
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001 - 回滚失败不得掩盖查询结果或原始异常
+            logger.exception("只读事务回滚失败")
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001 - 关闭失败不得掩盖原始异常
+            logger.exception("数据库连接关闭失败")
     return pd.DataFrame(rows)

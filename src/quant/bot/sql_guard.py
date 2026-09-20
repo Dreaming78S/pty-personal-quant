@@ -9,7 +9,8 @@ MAX_ROWS = 200
 BANNED_KEYWORDS = (
     "insert", "update", "delete", "replace", "drop", "alter", "create",
     "truncate", "rename", "grant", "revoke", "set", "call", "load",
-    "outfile", "dumpfile", "sleep", "benchmark", "get_lock", "into",
+    "load_file", "table", "values", "outfile", "dumpfile", "sleep",
+    "benchmark", "get_lock", "into",
 )
 
 SYSTEM_SCHEMAS = frozenset({
@@ -247,12 +248,17 @@ def validate_sql(sql: str, allowed: set[str] | None = None,
     if banned:
         raise SqlRejected(f"不允许的关键字：{banned.group(0).upper()}")
 
-    cte_names, refs = _analyze(body)
+    try:
+        cte_names, refs = _analyze(body)
+    except RecursionError as exc:
+        raise SqlRejected("SQL 嵌套过深") from exc
     system = sorted({segment.lower() for segments in refs
                      for segment in segments
                      if segment.lower() in SYSTEM_SCHEMAS})
     if system:
         raise SqlRejected(f"不允许查询的表：{', '.join(system)}")
+    # 限定名（db.table）只取末段比对白名单：非系统库的前缀不再单独校验，
+    # 这是有意折中，执行层只读账号的库权限是第二道防线。
     plain_names = {segments[0].lower() for segments in refs if len(segments) == 1}
     qualified_names = {segments[-1].lower() for segments in refs if len(segments) > 1}
     names = (plain_names - cte_names) | qualified_names

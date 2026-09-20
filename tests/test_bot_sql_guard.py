@@ -55,6 +55,28 @@ def test_validate_rejects_dangerous_sql(sql):
         validate_sql(sql, allowed=ALLOWED)
 
 
+@pytest.mark.parametrize("sql", [
+    "SELECT * FROM daily WHERE ts_code = (TABLE evil)",
+    "WITH x AS (TABLE evil) SELECT * FROM x",
+    "SELECT * FROM daily WHERE ts_code IN (TABLE evil)",
+])
+def test_validate_rejects_table_subquery_bypass(sql):
+    with pytest.raises(SqlRejected):
+        validate_sql(sql, allowed=ALLOWED)
+
+
+def test_validate_rejects_load_file():
+    with pytest.raises(SqlRejected):
+        validate_sql("SELECT LOAD_FILE('/etc/passwd') FROM daily", allowed=ALLOWED)
+
+
+def test_validate_rejects_deeply_nested_parentheses():
+    sql = "SELECT * FROM " + "(" * 2000 + "daily" + ")" * 2000
+
+    with pytest.raises(SqlRejected, match="嵌套过深"):
+        validate_sql(sql, allowed=ALLOWED)
+
+
 def test_validate_rejects_unknown_table():
     with pytest.raises(SqlRejected, match="不允许查询的表"):
         validate_sql("SELECT * FROM mysql_user", allowed=ALLOWED)

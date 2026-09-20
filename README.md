@@ -53,7 +53,7 @@ uv run quant bot serve                                  # 启动长连接常驻�
 ```
 
 - 需要 `.env` 配置 `feishu_app_id`、`feishu_app_secret`、`deepseek_api_key`（可选 `deepseek_base_url`、`deepseek_model`）
-- 飞书开放平台需把事件订阅方式设为「长连接」、订阅 `im.message.receive_v1`，并开通 `im:message`（群聊含 `im:message.group_at_msg:readonly`）与 `im:message:send_as_bot` 权限后发布版本
+- 飞书开放平台需把事件订阅方式设为「长连接」、订阅 `im.message.receive_v1`，并开通 `im:message:send_as_bot`（回复）与私聊 `im:message` 权限；群聊**只**授 `im:message.group_at_msg:readonly`（仅接收 @机器人 的消息，避免机器人响应群里未 @ 的普通消息）后发布版本
 - 安全边界：只允许单条 `SELECT`/`WITH`、表白名单（`schemas` 中全部表）、`START TRANSACTION READ ONLY`、结果最多 200 行、查询超时 15 秒
 
 ## 策略历史命中（hit_&lt;策略&gt;）
