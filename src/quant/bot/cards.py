@@ -6,19 +6,17 @@ MAX_TITLE_CHARS = 80
 TABLE_PAGE_SIZE = 5
 
 
-def _card(title: str, elements: list[dict], template: str,
-          with_table: bool = False) -> dict:
-    """组装飞书交互卡片骨架（宽屏、指定 header 颜色）。"""
-    card = {
+def _card(title: str, elements: list[dict], template: str) -> dict:
+    """组装飞书交互卡片骨架（宽屏、指定 header 颜色）。
+
+    不要添加 fallback 字段：手机飞书（实测 v8.0.2）遇到该字段会整张卡不显示。
+    """
+    return {
         "config": {"wide_screen_mode": True},
         "header": {"title": {"tag": "plain_text", "content": title},
                    "template": template},
         "elements": elements,
     }
-    if with_table:
-        card["fallback"] = {"trigger_conditions": [
-            {"type": "element_tags", "value": ["table"]}]}
-    return card
 
 
 def _md(content: str) -> dict:
@@ -84,5 +82,4 @@ def build_answer_card(question: str, answer: Answer,
     elements = [_md("\n".join(body))]
     if table is not None and table.rows:
         elements.append(_table_element(table))
-    return _card(title, elements, "blue" if answer.ok else "grey",
-                 with_table=table is not None and bool(table.rows))
+    return _card(title, elements, "blue" if answer.ok else "grey")

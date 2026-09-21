@@ -85,12 +85,12 @@ def test_build_answer_card_renders_table():
     assert element["columns"][2]["format"] == {"precision": 2, "separator": True}
     assert element["rows"] == [{"date": "2026-09-21", "rank": 2,
                                 "amount": 160740.52}]
-    assert card["fallback"] == {"trigger_conditions": [
-        {"type": "element_tags", "value": ["table"]}]}
+    assert "fallback" not in card
     json.dumps(card, ensure_ascii=False)
 
 
 def test_build_answer_card_without_table_has_no_fallback():
+    """卡片绝不能带 fallback：手机飞书遇到该字段整张卡不显示（实测）。"""
     card = cards.build_answer_card("问题", Answer("没有查到数据。", ok=True))
 
     assert "fallback" not in card

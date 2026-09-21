@@ -143,6 +143,12 @@ def test_summary_prompt_requires_json_output():
     assert "raw_close" in qa.SUMMARY_SYSTEM_PROMPT
 
 
+def test_summary_prompt_maps_strategy_names_to_chinese():
+    for name in ("ma_volume=均线放量", "turtle_trade=海龟交易",
+                 "rise_shrink_pullback=上涨缩量回调"):
+        assert name in qa.SUMMARY_SYSTEM_PROMPT
+
+
 def test_parse_summary_builds_table():
     raw = json.dumps({
         "conclusion": "近 30 天命中 2 次",
