@@ -1,4 +1,4 @@
-import json
+﻿import json
 import warnings
 
 import pytest
@@ -60,6 +60,11 @@ class FakeClient:
         self.message_api = FakeMessageApi(response or FakeResponse())
         self.im = type("Im", (), {"v1": type("V1", (), {
             "message": self.message_api})})()
+
+
+def _card_body(card):
+    element = card["elements"][0]
+    return element["text"]["content"] if "text" in element else element["content"]
 
 
 def test_strip_mentions_removes_placeholders():
@@ -164,7 +169,7 @@ def test_service_answers_and_replies(monkeypatch):
 
     card = client.message_api.requests[0]
     assert card["header"]["title"]["content"] == "【问数】博敏电子最近几天命中策略的情况"
-    assert "<at id=ou_1></at>" in card["elements"][0]["text"]["content"]
+    assert "<at id=ou_1></at>" in _card_body(card)
 
 
 def test_service_does_not_at_in_private_chat(monkeypatch):
@@ -179,7 +184,7 @@ def test_service_does_not_at_in_private_chat(monkeypatch):
     service._pool.shutdown(wait=True)
 
     card = client.message_api.requests[0]
-    assert "<at id=" not in card["elements"][0]["text"]["content"]
+    assert "<at id=" not in _card_body(card)
 
 
 def test_service_hints_on_empty_question():
@@ -193,7 +198,7 @@ def test_service_hints_on_empty_question():
 
     card = client.message_api.requests[0]
     assert card["header"]["template"] == "grey"
-    assert feishu.EMPTY_QUESTION_HINT in card["elements"][0]["text"]["content"]
+    assert feishu.EMPTY_QUESTION_HINT in _card_body(card)
 
 
 def test_service_deduplicates_redelivered_events(monkeypatch):

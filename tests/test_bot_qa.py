@@ -132,3 +132,8 @@ def test_build_sql_messages_includes_schema_and_question():
     assert "只读" in messages[0]["content"]
     assert "### daily" in messages[0]["content"]
     assert messages[1] == {"role": "user", "content": "博敏电子"}
+
+
+def test_summary_prompt_forbids_inline_code():
+    """飞书卡片不渲染行内代码，总结提示词必须禁用反引号。"""
+    assert "反引号" in qa.SUMMARY_SYSTEM_PROMPT
