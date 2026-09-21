@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 
 import pandas as pd
@@ -28,6 +29,31 @@ def _read_meta(table: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
+def _first_value(series: pd.Series):
+    for value in series.head(100):
+        if value is None or (isinstance(value, float) and pd.isna(value)):
+            continue
+        return value
+    return None
+
+
+def _coerce_decimals(df: pd.DataFrame) -> pd.DataFrame:
+    """把 MySQL DECIMAL 读出的 object Decimal 列统一成 float64。
+
+    本地镜像的数值列约定是 float64（见 loader.build_market）；不转换的话，
+    既有 float64 镜像与 Decimal 增量拼接会得到 float64+Decimal 混合的
+    object 列，pyarrow 写 parquet 时按 double 推断而报 ArrowInvalid。
+    """
+    if df.empty:
+        return df
+    for column in list(df.columns):
+        if df[column].dtype != object:
+            continue
+        if isinstance(_first_value(df[column]), Decimal):
+            df[column] = pd.to_numeric(df[column], errors="coerce")
+    return df
+
+
 def _write_cache(table: str, df: pd.DataFrame, watermark: str | None) -> Path:
     path = cache_path(table)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -47,7 +73,8 @@ def ensure_cache(table: str) -> Path:
     if path.exists() and watermark is not None and meta.get("watermark") == watermark:
         return path
 
-    existing = pd.read_parquet(path) if path.exists() else pd.DataFrame()
+    existing = _coerce_decimals(
+        pd.read_parquet(path) if path.exists() else pd.DataFrame())
     date_col = schemas.date_column(table)
     if path.exists() and date_col and meta.get("watermark"):
         delta = db.read_df(
@@ -56,7 +83,7 @@ def ensure_cache(table: str) -> Path:
         )
     else:
         delta = db.read_df(f"SELECT * FROM `{table}`")
-
+    delta = _coerce_decimals(delta)
     if delta.empty:
         delta = pd.DataFrame(columns=schemas.columns_of(table))
 

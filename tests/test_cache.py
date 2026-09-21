@@ -1,4 +1,5 @@
 import json
+from decimal import Decimal
 
 import pandas as pd
 import pytest
@@ -117,3 +118,41 @@ def test_ensure_cache_handles_empty_mysql(monkeypatch):
     out = cache.load_table("daily", columns=["ts_code", "trade_date"])
     assert out.empty
     assert list(out.columns) == ["ts_code", "trade_date"]
+
+
+def test_ensure_cache_converts_decimal_delta_to_float(monkeypatch):
+    """既有镜像为 float64、MySQL 增量以 Decimal 返回时不能写坏缓存。"""
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240102")
+    _fake_db(monkeypatch, lambda sql, params: pd.DataFrame(
+        {"ts_code": ["000001.SZ"], "trade_date": ["20240102"],
+         "open": [11.7]}))
+    cache.ensure_cache("daily")
+    assert pd.read_parquet(cache.cache_path("daily"))["open"].dtype == "float64"
+
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240103")
+    _fake_db(monkeypatch, lambda sql, params: pd.DataFrame(
+        {"ts_code": ["000001.SZ"], "trade_date": ["20240103"],
+         "open": [Decimal("12.5000")]}))
+
+    path = cache.ensure_cache("daily")
+
+    df = pd.read_parquet(path)
+    assert list(df["open"]) == [11.7, 12.5]
+    assert df["open"].dtype == "float64"
+    assert list(df["trade_date"]) == ["20240102", "20240103"]
+
+
+def test_ensure_cache_converts_decimal_snapshot_to_float(monkeypatch):
+    """非日期表整表快照里的 Decimal 也统一成 float64，与日期表镜像一致。"""
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240102")
+    _fake_db(monkeypatch, lambda sql, params: pd.DataFrame({
+        "ts_code": ["000001.SZ"], "sub_code": ["000001"], "name": ["示例"],
+        "amount": [Decimal("1234.5000")], "pe": [Decimal("23.450000")]}))
+
+    path = cache.ensure_cache("new_share")
+
+    df = pd.read_parquet(path)
+    assert df["amount"].dtype == "float64"
+    assert df["pe"].dtype == "float64"
+    assert list(df["amount"]) == [1234.5]
+    assert list(df["name"]) == ["示例"]
