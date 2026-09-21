@@ -107,15 +107,15 @@ def hits_update(
 
 @app.command("notify")
 def notify_cmd(
-    strategy: str = typer.Option("all", "--strategy", "-s",
-                                 help="all、策略名或逗号组合"),
+    strategy: str = typer.Option(None, "--strategy", "-s",
+                                 help="缺省=今日最终推荐+多策略共振；all=全部策略卡；策略名/逗号组合"),
     date: str = typer.Option(None, "--date", "-d",
                              help="交易日，缺省最新；非交易日自动回退"),
     dry_run: bool = typer.Option(False, "--dry-run", help="只打印消息不发送"),
     co: bool = typer.Option(True, "--co/--no-co",
-                            help="是否附带多策略共振卡片"),
+                            help="是否附带多策略共振卡片（仅 --strategy 有效）"),
 ) -> None:
-    """将各策略当日命中清单与多策略共振推送飞书群（每策略一张卡片）。"""
+    """推送飞书卡片。缺省只发两张卡（今日最终推荐 + 多策略共振），不再逐策略刷屏。"""
     from quant.engine import notify
     from quant.utils.dates import to_yyyymmdd
     from quant.utils.logging import setup_logging
@@ -123,7 +123,9 @@ def notify_cmd(
     setup_logging()
     target = to_yyyymmdd(date) if date else None
     if dry_run:
-        messages = notify.build_messages(strategy, target, include_co=co)
+        messages = (notify.build_default_messages(target)
+                    if strategy in (None, "")
+                    else notify.build_messages(strategy, target, include_co=co))
         for name, message in messages.items():
             typer.echo(f"----- {name} -----")
             typer.echo(notify.render_text(message))
@@ -135,6 +137,59 @@ def notify_cmd(
         failed = failed or status.startswith("失败")
     if failed:
         raise typer.Exit(code=1)
+
+
+@app.command("recommend")
+def recommend_cmd(
+    date: str = typer.Option(None, "--date", "-d",
+                             help="交易日，缺省最新；非交易日自动回退"),
+) -> None:
+    """显示当日最终推荐（环境闸门 + 分层），只读不推送。"""
+    import pandas as pd
+
+    from quant.engine import recommend as rec
+    from quant.utils.dates import to_yyyymmdd
+    from quant.utils.logging import setup_logging
+
+    setup_logging()
+    target = to_yyyymmdd(date) if date else None
+    try:
+        result = rec.build_recommendations(target)
+    except ValueError as exc:
+        typer.echo(f"无法生成推荐：{exc}")
+        raise typer.Exit(code=1) from exc
+
+    index_name = rec.INDEX_NAMES_ZH.get(rec.load_config().gate_index,
+                                        rec.load_config().gate_index)
+    if result.gate_open:
+        typer.echo(
+            f"环境开：{index_name} 收盘 {result.index_close:.2f} ≥ "
+            f"{rec.load_config().gate_ma_days} 日均线 {result.index_ma:.2f}"
+        )
+    else:
+        typer.echo(
+            f"环境关：{index_name} 收盘 {result.index_close:.2f} < "
+            f"{rec.load_config().gate_ma_days} 日均线 {result.index_ma:.2f}"
+        )
+
+    rows = []
+    for pick in (*result.primary, *result.secondary):
+        detail = "、".join(f"{label}({rank})" for label, rank in pick.hits)
+        rows.append({
+            "档位": pick.tier,
+            "名称": pick.name,
+            "代码": pick.ts_code,
+            "行业": pick.industry,
+            "收盘": pick.raw_close,
+            "成交额千": pick.amount,
+            "共振数": pick.co_count,
+            "理由": detail,
+        })
+    if rows:
+        typer.echo(pd.DataFrame(rows).to_string(index=False))
+        typer.echo("纪律：T+1 开盘买入，T+2 收盘卖出（最多持有到 T+3）")
+    else:
+        typer.echo("今日无符合推荐条件的股票。")
 
 
 @app.command("list")

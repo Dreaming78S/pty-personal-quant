@@ -20,8 +20,9 @@ uv run quant select -s ma_volume -n 50           # 只输出前 50 只
 uv run quant select -s ma_volume --boards all    # 不限板块（main,gem,star,bse 可逗号组合）
 uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17   # 默认等权买入全部信号股
 uv run quant hits update -s all                  # 回填/增量写入 hit_<策略> 历史命中表
-uv run quant notify                              # 飞书推送当日卡片（7 策略 + 同日共振 + 5日复合共振）
-uv run quant notify -s ma_volume --dry-run       # 只打印不发送，先预览
+uv run quant recommend                           # 显示当日最终推荐（环境闸门 + 分层，只读不推送）
+uv run quant notify                              # 飞书推送默认两张卡：今日最终推荐 + 多策略共振
+uv run quant notify -s all --dry-run             # 只打印不发送，预览旧版全部策略卡（含共振、复合）
 ```
 
 ## 交易日盘后流程
@@ -30,11 +31,12 @@ uv run quant notify -s ma_volume --dry-run       # 只打印不发送，先预�
 uv run quant data update     # 1. 行情增量入库（建议交易日 17:30 后执行）
 uv run quant hits update     # 2. 各策略命中表增量写入（可 -s 指定策略）
 uv run quant data status     # 3. 校验各 hit_<策略> 水位线已追平最新交易日
-uv run quant notify          # 4. 飞书推送当日卡片（可选）
+uv run quant recommend       # 4. 输出当日最终推荐（可选，只读）
+uv run quant notify          # 5. 飞书推送默认两张卡（可选）
 ```
 
 - 更新与推送彼此独立：`notify` 只读命中表；推送已入库的历史日期用 `-d`，无需先跑数据更新；推送前可用 `--dry-run` 预览
-- 本地 `scripts/daily_update.py` 一键执行全部 4 步（`--skip-notify` 可只更新不推送；非交易日自动跳过推送；`scripts/` 未纳入版本管理）
+- 本地 `scripts/daily_update.py` 一键执行盘后流程（`--skip-notify` 可只更新不推送；非交易日自动跳过推送；`scripts/` 未纳入版本管理）
 - 定时任务（Windows 任务计划程序）：任务名 `MyAStockQuant_DailyUpdate`，每周一至周五 **17:30** 运行 `scripts/daily_update_task.cmd`（内部调用 `daily_update.py`，日志追加到 `logs/daily_update.log`）；任务为交互式运行（需处于登录状态），某步失败会返回非零退出码且不推送，稍后手动重跑即可
 
   ```powershell
@@ -68,11 +70,13 @@ uv run quant bot serve                                  # 启动长连接常驻�
 ## 飞书通知
 
 - 在 `.env` 配置自定义机器人 webhook：`feishu_webhook_url`（必填）；机器人开启"签名校验"时再加 `feishu_webhook_secret`（可选，自动加签）
-- `uv run quant notify`：读取各 `hit_<策略>` 表当日记录，每策略一条交互卡片推送飞书群（无命中也会发"今日无命中"，卡片头置灰）；`-s` 选策略（默认全部）、`-d` 指定交易日（默认最新）、`--dry-run` 只打印不发送、`--no-co` 跳过两张共振类卡片
-- 附带的「多策略共振」卡片：当日被 ≥2 个策略命中的股票（始终按全部已注册策略统计），按策略数降序、成交额降序，每行附命中策略，橙色卡片头
-- 附带的「5日复合共振（当日含 rise_shrink_pullback）」卡片：当日命中 `rise_shrink_pullback`、且近 5 个交易日（含当日）命中过其他策略的股票，按其他策略数降序、成交额降序，行内列出策略名与命中日期（如 `rps_breakout(09-15、09-16)`），紫色卡片头
-- 命中表未追平目标日期时报错并提示先执行 `quant hits update`，不会把"未更新"误报成"无命中"；单条发送失败不阻断其余策略（网络类错误自动重试 2 次、间隔 1 秒），有失败时退出码为 1
-- 策略卡片内容：标题为策略名+日期+命中数，正文按 rank 排序，每行「序号、名称（加粗）、不复权收盘价、行业」
+- `uv run quant notify`（默认）：只发两张卡，解决"推荐太多不知道选哪个"的问题：
+  - **今日最终推荐**：基于沪深300 ≥ 20 日均线的环境闸门，把当日命中按规则分层为「重点」「备选」，最多 10 只；纪律为 T+1 开盘买入、T+2 收盘卖出（最多 T+3），不随盘中小赚就跑。闸门关闭时推荐区域提示空仓，但仍会发共振卡。
+  - **多策略共振**：当日被 ≥2 个策略命中的股票（始终按全部已注册策略统计），按策略数降序、成交额降序，每行附命中策略，橙色卡片头。
+- `uv run quant notify -s <策略名>` 或 `-s all` 切回旧版单策略/全策略卡片模式，`--no-co` 在该模式下跳过两张共振类卡片；`-d` 指定交易日（默认最新）、`--dry-run` 只打印不发送
+- 附带的「5日复合共振（当日含 rise_shrink_pullback）」卡片：仅在 `-s all` 模式下跟随共振类卡片；当日命中 `rise_shrink_pullback`、且近 5 个交易日（含当日）命中过其他策略的股票，按其他策略数降序、成交额降序，行内列出策略名与命中日期（如 `rps_breakout(09-15、09-16)`），紫色卡片头
+- 命中表未追平目标日期时报错并提示先执行 `quant hits update`，不会把"未更新"误报成"无命中"；单条发送失败不阻断其余卡片（网络类错误自动重试 2 次、间隔 1 秒），有失败时退出码为 1
+- 策略卡片内容（`-s` 模式）：标题为策略名+日期+命中数，正文按 rank 排序，每行「序号、名称（加粗）、不复权收盘价、行业」
 
 ## 数据表
 

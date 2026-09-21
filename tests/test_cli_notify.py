@@ -36,10 +36,11 @@ def test_notify_dry_run_can_skip_co(monkeypatch):
 
     monkeypatch.setattr("quant.engine.notify.build_messages", fake_build)
 
-    result = runner.invoke(app, ["notify", "--no-co", "--dry-run"])
+    result = runner.invoke(app, ["notify", "-s", "all", "--no-co", "--dry-run"])
 
     assert result.exit_code == 0
     assert captured == {"include_co": False}
+
 
 
 def test_notify_success_reports_sent(monkeypatch):
@@ -70,3 +71,37 @@ def test_notify_failure_exits_nonzero(monkeypatch):
 
     assert result.exit_code == 1
     assert "失败：boom" in result.output
+
+
+def test_notify_default_runs_default_messages(monkeypatch):
+    called = {}
+
+    def fake_notify(strategy=None, date=None, include_co=True):
+        called["strategy"] = strategy
+        called["date"] = date
+        called["include_co"] = include_co
+        return {"今日最终推荐": "已发送", "多策略共振": "已发送"}
+
+    monkeypatch.setattr("quant.engine.notify.notify_hits", fake_notify)
+    result = runner.invoke(app, ["notify", "-d", "20260918"])
+
+    assert result.exit_code == 0
+    assert called == {"strategy": None, "date": "20260918", "include_co": True}
+
+
+def test_notify_default_dry_run_prints_default_messages(monkeypatch):
+    recommend_message = notify.FeishuMessage(
+        "【今日最终推荐】2026-09-18", ("今日无符合",), False, "grey")
+    co_message = notify.FeishuMessage("【多策略共振】2026-09-18",
+                                      ("今日无共振",), False)
+    monkeypatch.setattr(
+        "quant.engine.notify.build_default_messages",
+        lambda date: {"今日最终推荐": recommend_message,
+                      "多策略共振": co_message})
+
+    result = runner.invoke(app, ["notify", "-d", "20260918", "--dry-run"])
+
+    assert result.exit_code == 0
+    assert "----- 今日最终推荐 -----" in result.output
+    assert "今日无符合" in result.output
+    assert "----- 多策略共振 -----" in result.output

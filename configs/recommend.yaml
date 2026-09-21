@@ -1,0 +1,10 @@
+# 每日最终推荐规则（quant recommend 与默认飞书推送共用；改这里无需改代码）
+gate:
+  index: "000300.SH"    # 环境闸门：该指数收盘 >= ma_days 日均线才出手
+  ma_days: 20
+tiers:
+  primary_strategies: ["limit_up_shakeout"]  # 命中即进重点档的策略
+  primary_min_co: 3      # 或当日 >= N 个策略共振也进重点档
+  secondary_min_co: 2    # 备选档：>= N 个策略共振
+  secondary_max_rank: 5  # 且至少一个策略内当日排名 <= 该值
+max_picks: 10            # 重点+备选总上限（先保重点档）

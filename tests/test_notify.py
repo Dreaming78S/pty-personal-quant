@@ -7,7 +7,23 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
-from quant.engine import notify
+from quant.engine import notify, recommend
+
+_CFG = recommend.RecommendConfig()
+
+
+def _pick(ts_code, name, tier, co_count, hits, raw_close=21.34,
+          amount=1068000.0, industry="元器件"):
+    return recommend.Pick(ts_code=ts_code, name=name, industry=industry,
+                          raw_close=raw_close, amount=amount, tier=tier,
+                          co_count=co_count, hits=hits)
+
+
+def _result(primary=(), secondary=(), gate_open=True, close=11.0, ma=10.05):
+    return recommend.RecommendResult(date="20260918", gate_open=gate_open,
+                                     index_close=close, index_ma=ma,
+                                     primary=tuple(primary),
+                                     secondary=tuple(secondary))
 
 
 def _hits_frame():
@@ -565,3 +581,100 @@ def test_notify_hits_passes_include_co(monkeypatch):
 
     assert notify.notify_hits("all", "20260918", include_co=False) == {}
     assert captured == {"include_co": False}
+
+
+def test_build_recommend_message_lists_tiered_picks(monkeypatch):
+    primary = (
+        _pick("000002.SZ", "股B", "重点", 3,
+              (("RPS突破", 1), ("海龟交易", 3), ("均线放量", 5))),
+        _pick("000001.SZ", "股A", "重点", 1, (("涨停洗盘", 2),),
+              raw_close=10.5, amount=100000.0, industry="行业A"),
+    )
+    secondary = (
+        _pick("000003.SZ", "股C", "备选", 2,
+              (("RPS突破", 4), ("海龟交易", 9)),
+              raw_close=37.86, amount=200000.0, industry="行业C"),
+    )
+    monkeypatch.setattr(notify.recommend, "build_recommendations",
+                        lambda date, config=None: _result(primary, secondary))
+
+    message = notify.build_recommend_message("20260918", config=_CFG)
+
+    assert message.title == "【今日最终推荐】2026-09-18 重点 2 · 备选 1"
+    assert message.lines == (
+        "环境开：沪深300 收盘 11.00 ≥ 20 日均线 10.05",
+        "【重点】1. **股B** 21.34 [元器件] — RPS突破(1)、海龟交易(3)、均线放量(5)",
+        "【重点】2. **股A** 10.50 [行业A] — 涨停洗盘(2)",
+        "【备选】3. **股C** 37.86 [行业C] — RPS突破(4)、海龟交易(9)",
+        "纪律：T+1 开盘买入，T+2 收盘卖出（最多持有到 T+3）",
+    )
+    assert message.has_hits is True
+    assert message.template == "blue"
+
+
+def test_build_recommend_message_gate_closed(monkeypatch):
+    monkeypatch.setattr(
+        notify.recommend, "build_recommendations",
+        lambda date, config=None: _result(gate_open=False, close=9.9,
+                                          ma=9.995))
+
+    message = notify.build_recommend_message("20260918", config=_CFG)
+
+    assert message.title == "【今日最终推荐】2026-09-18"
+    assert message.lines == ("今日不出手：沪深300 收盘 9.90 低于 20 日均线 9.99",)
+    assert message.has_hits is False
+    assert message.template == "grey"
+
+
+def test_build_recommend_message_without_picks(monkeypatch):
+    monkeypatch.setattr(notify.recommend, "build_recommendations",
+                        lambda date, config=None: _result())
+
+    message = notify.build_recommend_message("20260918", config=_CFG)
+
+    assert message.title == "【今日最终推荐】2026-09-18"
+    assert message.lines == ("今日无符合推荐条件的股票",)
+    assert message.has_hits is False
+    assert message.template == "grey"
+
+
+def test_build_default_messages_is_recommend_plus_co(monkeypatch):
+    monkeypatch.setattr(notify.loader, "resolve_trade_date",
+                        lambda date=None: "20260918")
+    recommend_message = notify.FeishuMessage("【今日最终推荐】2026-09-18",
+                                             ("今日无符合推荐条件的股票",), False)
+    co_message = notify.FeishuMessage("【多策略共振】2026-09-18",
+                                      ("今日无共振",), False)
+    monkeypatch.setattr(notify, "build_recommend_message",
+                        lambda date, config=None: recommend_message)
+    monkeypatch.setattr(notify, "build_co_message",
+                        lambda date: co_message)
+
+    messages = notify.build_default_messages("20260918")
+
+    assert list(messages) == ["今日最终推荐", "多策略共振"]
+    assert messages["今日最终推荐"] is recommend_message
+    assert messages["多策略共振"] is co_message
+
+
+def test_notify_hits_default_uses_recommend_and_co(monkeypatch):
+    monkeypatch.setattr(notify, "get_settings",
+                        lambda: SimpleNamespace(
+                            feishu_webhook_url="https://hook",
+                            feishu_webhook_secret=None))
+    message = notify.FeishuMessage("【今日最终推荐】2026-09-18",
+                                   ("今日不出手",), False)
+    monkeypatch.setattr(notify, "build_default_messages",
+                        lambda date: {"今日最终推荐": message})
+    monkeypatch.setattr(
+        notify, "build_messages",
+        lambda *args, **kwargs: pytest.fail("默认推送不应组装策略卡"))
+    sent = []
+    monkeypatch.setattr(notify, "send_message",
+                        lambda url, m, secret=None: sent.append(m))
+
+    results = notify.notify_hits(date="20260918")
+
+
+    assert sent == [message]
+    assert results == {"今日最终推荐": "已发送"}

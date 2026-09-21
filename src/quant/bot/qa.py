@@ -10,9 +10,14 @@ import pandas as pd
 from quant.bot import schema
 from quant.bot.llm import LlmError
 from quant.bot.sql_guard import SqlRejected, validate_sql
+from quant.engine.recommend import STRATEGY_NAMES_ZH
 
 MAX_ROWS = 200
 MAX_RESULT_CHARS = 8000
+
+_STRATEGY_MAPPING = "、".join(
+    f"{k}={v}" for k, v in sorted(STRATEGY_NAMES_ZH.items())
+)
 
 SQL_SYSTEM_PROMPT = """你是 A 股量化数据库的 SQL 助手。根据用户问题写一条只读 SELECT 查询。
 
@@ -25,7 +30,8 @@ SQL_SYSTEM_PROMPT = """你是 A 股量化数据库的 SQL 助手。根据用户�
   name/industry 为入库快照；命中表水位线在 ingest_log（task_name = 'hit_<策略>'）。
 - 只输出 JSON：{"sql": "...", "explain": "一句话说明"}"""
 
-SUMMARY_SYSTEM_PROMPT = """你是 A 股量化助手。根据查询结果回答用户问题，只输出一个 JSON 对象。
+SUMMARY_SYSTEM_PROMPT = (
+    """你是 A 股量化助手。根据查询结果回答用户问题，只输出一个 JSON 对象。
 
 JSON 结构：
 {"conclusion": "一句话结论（中文，可用 **粗体**）",
@@ -35,13 +41,14 @@ JSON 结构：
 要求：
 - columns 最多 6 列、rows 最多 20 行；列名必须用中文（如 日期/策略/排名/收盘价/成交额/连续命中），
   不要出现 raw_close、score、trade_date 这类数据库字段名
-- 策略名一律用中文，按下表映射：ma_volume=均线放量、turtle_trade=海龟交易、
-  high_tight_flag=高位窄幅整理、limit_up_shakeout=涨停洗盘、uptrend_limit_down=上涨趋势跌停、
-  rps_breakout=RPS突破、rise_shrink_pullback=上涨缩量回调
+- 策略名一律用中文，按下表映射："""
+    + _STRATEGY_MAPPING
+    + """
 - 每列 type 取 text 或 number；number 列的值只放纯数字（不要单位、千分位、百分号）
 - rows 中每个对象的 key 必须来自 columns，不要编造查询结果里没有的数据
 - 结果为空时 conclusion 写「没有查到数据」，columns 与 rows 用空数组
 - 只输出 JSON：不要 markdown 代码围栏、不要 JSON 之外的任何说明文字"""
+)
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
 

@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import base64
 import hashlib
@@ -15,7 +15,7 @@ import pandas as pd
 
 from quant.config import get_settings
 from quant.data import db, ingest, schemas
-from quant.engine import hit_performance, loader
+from quant.engine import hit_performance, loader, recommend
 from quant.strategies.base import list_strategies
 
 MAX_TEXT_CHARS = 20000
@@ -23,8 +23,10 @@ CO_MESSAGE_KEY = "多策略共振"
 COMBINED_MESSAGE_KEY = "5日复合共振"
 COMBINED_BASE_STRATEGY = "rise_shrink_pullback"
 COMBINED_WINDOW_DAYS = 5
+RECOMMEND_MESSAGE_KEY = "今日最终推荐"
 RETRY_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 1.0
+
 
 logger = logging.getLogger(__name__)
 
@@ -328,14 +330,63 @@ def build_combined_message(date: str | None = None) -> FeishuMessage:
     return format_combined_message(target, window, rise_rows, other_hits)
 
 
-def notify_hits(strategy: str = "all", date: str | None = None,
+def build_recommend_message(date: str | None = None,
+                            config: recommend.RecommendConfig | None = None
+                            ) -> FeishuMessage:
+    """今日最终推荐卡片：环境闸门状态 + 分层推荐 + 交易纪律一行。"""
+    config = config or recommend.load_config()
+    result = recommend.build_recommendations(date, config)
+    index_name = recommend.INDEX_NAMES_ZH.get(config.gate_index, config.gate_index)
+    date_text = _display_date(result.date)
+    title = f"【{RECOMMEND_MESSAGE_KEY}】{date_text}"
+
+    if not result.gate_open:
+        line = (f"今日不出手：{index_name} 收盘 "
+                f"{_fmt(result.index_close, '.2f')} 低于 "
+                f"{config.gate_ma_days} 日均线 {_fmt(result.index_ma, '.2f')}")
+        return FeishuMessage(title, (line,), False, "grey")
+
+    if not result.primary and not result.secondary:
+        return FeishuMessage(title, ("今日无符合推荐条件的股票",), False, "grey")
+
+    title = (f"{title} 重点 {len(result.primary)} · 备选 {len(result.secondary)}")
+    lines = [
+        f"环境开：{index_name} 收盘 {_fmt(result.index_close, '.2f')} ≥ "
+        f"{config.gate_ma_days} 日均线 {_fmt(result.index_ma, '.2f')}",
+    ]
+    for index, pick in enumerate((*result.primary, *result.secondary), start=1):
+        stock = _format_stock(index, pick.name, pick.industry, pick.raw_close)
+        detail = "、".join(f"{label}({rank})" for label, rank in pick.hits)
+        lines.append(f"【{pick.tier}】{stock} — {detail}")
+    lines.append("纪律：T+1 开盘买入，T+2 收盘卖出（最多持有到 T+3）")
+    return _finish(title, lines, True)
+
+
+def build_default_messages(date: str | None = None) -> dict[str, FeishuMessage]:
+    """默认推送：今日最终推荐 + 多策略共振两张卡。"""
+    target = loader.resolve_trade_date(date)
+    return {
+        RECOMMEND_MESSAGE_KEY: build_recommend_message(target),
+        CO_MESSAGE_KEY: build_co_message(target),
+    }
+
+
+def notify_hits(strategy: str | None = None, date: str | None = None,
                 include_co: bool = True) -> dict[str, str]:
-    """逐条推送飞书卡片；单条失败不中断，返回 {名称: 状态描述}。"""
+    """逐条推送飞书卡片；单条失败不中断，返回 {名称: 状态描述}。
+
+    strategy 为空时推默认两卡（今日最终推荐 + 多策略共振）；
+    指定策略（或 all）时推各策略卡 + 共振卡（旧行为）。
+    """
     settings = get_settings()
     if not settings.feishu_webhook_url:
         raise ValueError("未配置 FEISHU_WEBHOOK_URL（.env），无法推送飞书")
+    if strategy in (None, ""):
+        messages = build_default_messages(date)
+    else:
+        messages = build_messages(strategy, date, include_co)
     results: dict[str, str] = {}
-    for name, message in build_messages(strategy, date, include_co).items():
+    for name, message in messages.items():
         try:
             send_message(settings.feishu_webhook_url, message,
                          settings.feishu_webhook_secret)
@@ -343,3 +394,5 @@ def notify_hits(strategy: str = "all", date: str | None = None,
         except Exception as exc:  # noqa: BLE001 - 单条失败不阻断其余策略
             results[name] = f"失败：{exc}"
     return results
+
+
