@@ -25,14 +25,38 @@ SQL_SYSTEM_PROMPT = """你是 A 股量化数据库的 SQL 助手。根据用户�
   name/industry 为入库快照；命中表水位线在 ingest_log（task_name = 'hit_<策略>'）。
 - 只输出 JSON：{"sql": "...", "explain": "一句话说明"}"""
 
-SUMMARY_SYSTEM_PROMPT = """你是 A 股量化助手。根据查询结果用简洁中文回答用户问题。
+SUMMARY_SYSTEM_PROMPT = """你是 A 股量化助手。根据查询结果回答用户问题，只输出一个 JSON 对象。
 
-要求：先给结论，再列关键数据（日期、策略、名称、数值）；不要编造结果里没有的数据；
-结果为空就直说没有查到；不要输出与问题无关的推测。
-排版：可用「- 」无序列表分行；不要使用反引号（行内代码）、表格、标题等飞书卡片不渲染的语法，
-策略名与字段名直接写出来即可。"""
+JSON 结构：
+{"conclusion": "一句话结论（中文，可用 **粗体**）",
+ "columns": [{"key": "date", "name": "日期", "type": "text"}],
+ "rows": [{"date": "2026-09-21"}]}
+
+要求：
+- columns 最多 6 列、rows 最多 20 行；列名必须用中文（如 日期/策略/排名/收盘价/成交额/连续命中），
+  不要出现 raw_close、score、trade_date 这类数据库字段名
+- 每列 type 取 text 或 number；number 列的值只放纯数字（不要单位、千分位、百分号）
+- rows 中每个对象的 key 必须来自 columns，不要编造查询结果里没有的数据
+- 结果为空时 conclusion 写「没有查到数据」，columns 与 rows 用空数组
+- 只输出 JSON：不要 markdown 代码围栏、不要 JSON 之外的任何说明文字"""
 
 _JSON_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
+
+MAX_TABLE_COLUMNS = 6
+MAX_TABLE_ROWS = 20
+
+
+@dataclass(frozen=True)
+class Column:
+    key: str
+    name: str
+    kind: str = "text"
+
+
+@dataclass(frozen=True)
+class Table:
+    columns: tuple[Column, ...]
+    rows: tuple[dict, ...]
 
 
 @dataclass(frozen=True)
@@ -42,6 +66,7 @@ class Answer:
     row_count: int = 0
     ok: bool = True
     note: str = ""
+    table: Table | None = None
 
 
 def parse_sql_json(text: str) -> str:
@@ -67,6 +92,66 @@ def parse_sql_json(text: str) -> str:
     if not sql:
         raise SqlRejected("模型没有给出 SQL")
     return sql
+
+
+def _extract_json(text: str) -> dict | None:
+    """从模型输出里取出 JSON 对象（容忍 ``` 围栏与前后说明文字）。"""
+    candidate = (text or "").strip()
+    fenced = _JSON_FENCE.search(candidate)
+    if fenced:
+        candidate = fenced.group(1).strip()
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        start, end = candidate.find("{"), candidate.rfind("}")
+        if start == -1 or end <= start:
+            return None
+        try:
+            return json.loads(candidate[start:end + 1])
+        except json.JSONDecodeError:
+            return None
+
+
+def parse_summary(text: str) -> tuple[str, Table | None]:
+    """解析总结 JSON：返回（结论, 表格）；解析失败时回退为原始文本且无表格。"""
+    raw = (text or "").strip()
+    payload = _extract_json(raw)
+    if not isinstance(payload, dict):
+        return raw, None
+
+    columns: list[Column] = []
+    for item in payload.get("columns") or []:
+        if len(columns) >= MAX_TABLE_COLUMNS:
+            break
+        if not isinstance(item, dict):
+            continue
+        key = str(item.get("key") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not key or not name or any(c.key == key for c in columns):
+            continue
+        kind = ("number" if str(item.get("type") or "").lower() == "number"
+                else "text")
+        columns.append(Column(key, name, kind))
+
+    conclusion = str(payload.get("conclusion") or "").strip()
+    if not columns:
+        return (conclusion or raw), None
+
+    keys = [column.key for column in columns]
+    rows: list[dict] = []
+    for item in payload.get("rows") or []:
+        if len(rows) >= MAX_TABLE_ROWS:
+            break
+        if not isinstance(item, dict):
+            continue
+        row = {key: item[key] for key in keys if key in item}
+        if row:
+            rows.append(row)
+    if not rows:
+        return (conclusion or raw), None
+    if not conclusion:
+        conclusion = "查询结果如下。"
+    return conclusion, Table(tuple(columns), tuple(rows))
 
 
 def render_rows(rows: pd.DataFrame, max_rows: int = MAX_ROWS,
@@ -136,4 +221,6 @@ def answer(question: str, llm, runner: Callable[[str], pd.DataFrame],
         return Answer(text=f"已查到 {len(rows)} 行数据，但总结失败：{exc}",
                       sql=safe_sql, row_count=len(rows), ok=False,
                       note=rows_text[:200])
-    return Answer(text=summary, sql=safe_sql, row_count=len(rows), ok=True)
+    conclusion, table = parse_summary(summary)
+    return Answer(text=conclusion, sql=safe_sql, row_count=len(rows), ok=True,
+                  table=table)

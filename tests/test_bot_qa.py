@@ -1,3 +1,5 @@
+import json
+
 import pandas as pd
 import pytest
 
@@ -134,6 +136,81 @@ def test_build_sql_messages_includes_schema_and_question():
     assert messages[1] == {"role": "user", "content": "博敏电子"}
 
 
-def test_summary_prompt_forbids_inline_code():
-    """飞书卡片不渲染行内代码，总结提示词必须禁用反引号。"""
-    assert "反引号" in qa.SUMMARY_SYSTEM_PROMPT
+def test_summary_prompt_requires_json_output():
+    """总结必须输出 JSON（表格由代码渲染），且列名要中文化。"""
+    assert "JSON" in qa.SUMMARY_SYSTEM_PROMPT
+    assert "代码围栏" in qa.SUMMARY_SYSTEM_PROMPT
+    assert "raw_close" in qa.SUMMARY_SYSTEM_PROMPT
+
+
+def test_parse_summary_builds_table():
+    raw = json.dumps({
+        "conclusion": "近 30 天命中 2 次",
+        "columns": [{"key": "date", "name": "日期", "type": "text"},
+                    {"key": "rank", "name": "排名", "type": "number"}],
+        "rows": [{"date": "2026-09-21", "rank": 2},
+                 {"date": "2026-09-18", "rank": 1}],
+    }, ensure_ascii=False)
+
+    conclusion, table = qa.parse_summary(raw)
+
+    assert conclusion == "近 30 天命中 2 次"
+    assert table is not None
+    assert [(c.key, c.name, c.kind) for c in table.columns] == [
+        ("date", "日期", "text"), ("rank", "排名", "number")]
+    assert table.rows == ({"date": "2026-09-21", "rank": 2},
+                          {"date": "2026-09-18", "rank": 1})
+
+
+def test_parse_summary_falls_back_to_raw_text():
+    conclusion, table = qa.parse_summary("博敏电子命中 2 次")
+
+    assert conclusion == "博敏电子命中 2 次"
+    assert table is None
+
+
+def test_parse_summary_caps_columns_and_rows():
+    raw = json.dumps({
+        "conclusion": "结论",
+        "columns": [{"key": f"c{i}", "name": f"列{i}"} for i in range(9)],
+        "rows": [{f"c{i}": i for i in range(9)} for _ in range(30)],
+    }, ensure_ascii=False)
+
+    _, table = qa.parse_summary(raw)
+
+    assert len(table.columns) == qa.MAX_TABLE_COLUMNS
+    assert len(table.rows) == qa.MAX_TABLE_ROWS
+    assert set(table.rows[0]) == {f"c{i}" for i in range(qa.MAX_TABLE_COLUMNS)}
+
+
+def test_parse_summary_ignores_rows_without_known_keys():
+    raw = json.dumps({"conclusion": "结论",
+                      "columns": [{"key": "date", "name": "日期"}],
+                      "rows": [{"date": "2026-09-21", "extra": "x"}, {"other": 1}]})
+
+    _, table = qa.parse_summary(raw)
+
+    assert table.rows == ({"date": "2026-09-21"},)
+
+
+def test_parse_summary_without_columns_has_no_table():
+    conclusion, table = qa.parse_summary('{"conclusion": "没有查到数据"}')
+
+    assert conclusion == "没有查到数据"
+    assert table is None
+
+
+def test_answer_attaches_table_from_summary():
+    summary = json.dumps({
+        "conclusion": "命中 1 次",
+        "columns": [{"key": "date", "name": "日期", "type": "text"}],
+        "rows": [{"date": "2026-09-21"}],
+    }, ensure_ascii=False)
+    llm = ScriptedLlm(['{"sql": "SELECT 1 FROM hit_ma_volume"}', summary])
+
+    result = qa.answer("问题", llm, fake_runner([{"a": 1}]))
+
+    assert result.ok is True
+    assert result.text == "命中 1 次"
+    assert result.table is not None
+    assert result.table.rows == ({"date": "2026-09-21"},)
