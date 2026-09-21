@@ -19,11 +19,19 @@ def _pick(ts_code, name, tier, co_count, hits, raw_close=21.34,
                           co_count=co_count, hits=hits)
 
 
-def _result(primary=(), secondary=(), gate_open=True, close=11.0, ma=10.05):
+def _result(primary=(), secondary=(), gate_open=True, close=11.0, ma=10.05,
+            index_statuses=None):
+    if index_statuses is None:
+        index_statuses = (
+            recommend.IndexStatus(ts_code="000300.SH", name="沪深300",
+                                  close=close, ma=ma, above=gate_open),
+        )
     return recommend.RecommendResult(date="20260918", gate_open=gate_open,
                                      index_close=close, index_ma=ma,
                                      primary=tuple(primary),
-                                     secondary=tuple(secondary))
+                                     secondary=tuple(secondary),
+                                     index_statuses=index_statuses)
+
 
 
 def _hits_frame():
@@ -595,14 +603,16 @@ def test_build_recommend_message_lists_tiered_picks(monkeypatch):
               (("RPS突破", 4), ("海龟交易", 9)),
               raw_close=37.86, amount=200000.0, industry="行业C"),
     )
-    monkeypatch.setattr(notify.recommend, "build_recommendations",
-                        lambda date, config=None: _result(primary, secondary))
+    monkeypatch.setattr(
+        notify.recommend, "build_recommendations",
+        lambda date, config=None, ignore_gate=True: _result(primary, secondary))
 
     message = notify.build_recommend_message("20260918", config=_CFG)
 
     assert message.title == "【今日最终推荐】2026-09-18 重点 2 · 备选 1"
     assert message.lines == (
-        "环境开：沪深300 收盘 11.00 ≥ 20 日均线 10.05",
+        "环境闸门：1/1 个指数站上 20 日均线",
+        "• 沪深300 11.00 / MA20 10.05 ↑",
         "【重点】1. **股B** 21.34 [元器件] — RPS突破(1)、海龟交易(3)、均线放量(5)",
         "【重点】2. **股A** 10.50 [行业A] — 涨停洗盘(2)",
         "【备选】3. **股C** 37.86 [行业C] — RPS突破(4)、海龟交易(9)",
@@ -612,30 +622,42 @@ def test_build_recommend_message_lists_tiered_picks(monkeypatch):
     assert message.template == "blue"
 
 
+
 def test_build_recommend_message_gate_closed(monkeypatch):
     monkeypatch.setattr(
         notify.recommend, "build_recommendations",
-        lambda date, config=None: _result(gate_open=False, close=9.9,
-                                          ma=9.995))
+        lambda date, config=None, ignore_gate=True: _result(
+            gate_open=False, close=9.9, ma=9.995))
 
     message = notify.build_recommend_message("20260918", config=_CFG)
 
     assert message.title == "【今日最终推荐】2026-09-18"
-    assert message.lines == ("今日不出手：沪深300 收盘 9.90 低于 20 日均线 9.99",)
+    assert message.lines == (
+        "环境闸门：0/1 个指数站上 20 日均线",
+        "• 沪深300 9.90 / MA20 9.99 ↓",
+        "今日无符合推荐条件的股票",
+    )
     assert message.has_hits is False
     assert message.template == "grey"
+
 
 
 def test_build_recommend_message_without_picks(monkeypatch):
-    monkeypatch.setattr(notify.recommend, "build_recommendations",
-                        lambda date, config=None: _result())
+    monkeypatch.setattr(
+        notify.recommend, "build_recommendations",
+        lambda date, config=None, ignore_gate=True: _result())
 
     message = notify.build_recommend_message("20260918", config=_CFG)
 
     assert message.title == "【今日最终推荐】2026-09-18"
-    assert message.lines == ("今日无符合推荐条件的股票",)
+    assert message.lines == (
+        "环境闸门：1/1 个指数站上 20 日均线",
+        "• 沪深300 11.00 / MA20 10.05 ↑",
+        "今日无符合推荐条件的股票",
+    )
     assert message.has_hits is False
     assert message.template == "grey"
+
 
 
 def test_build_default_messages_is_recommend_plus_co(monkeypatch):

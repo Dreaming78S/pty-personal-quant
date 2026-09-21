@@ -144,7 +144,7 @@ def recommend_cmd(
     date: str = typer.Option(None, "--date", "-d",
                              help="交易日，缺省最新；非交易日自动回退"),
 ) -> None:
-    """显示当日最终推荐（环境闸门 + 分层），只读不推送。"""
+    """显示当日最终推荐（七个指数闸门 + 分层），只读不推送。"""
     import pandas as pd
 
     from quant.engine import recommend as rec
@@ -154,22 +154,22 @@ def recommend_cmd(
     setup_logging()
     target = to_yyyymmdd(date) if date else None
     try:
-        result = rec.build_recommendations(target)
+        result = rec.build_recommendations(target, ignore_gate=True)
     except ValueError as exc:
         typer.echo(f"无法生成推荐：{exc}")
         raise typer.Exit(code=1) from exc
 
-    index_name = rec.INDEX_NAMES_ZH.get(rec.load_config().gate_index,
-                                        rec.load_config().gate_index)
-    if result.gate_open:
+    config = rec.load_config()
+    open_count = sum(1 for s in result.index_statuses if s.above)
+    typer.echo(
+        f"环境闸门：{open_count}/{len(result.index_statuses)} 个指数站上 "
+        f"{config.gate_ma_days} 日均线"
+    )
+    for s in result.index_statuses:
+        arrow = "↑" if s.above else "↓"
         typer.echo(
-            f"环境开：{index_name} 收盘 {result.index_close:.2f} ≥ "
-            f"{rec.load_config().gate_ma_days} 日均线 {result.index_ma:.2f}"
-        )
-    else:
-        typer.echo(
-            f"环境关：{index_name} 收盘 {result.index_close:.2f} < "
-            f"{rec.load_config().gate_ma_days} 日均线 {result.index_ma:.2f}"
+            f"• {s.name} {s.close:.2f} / "
+            f"MA{config.gate_ma_days} {s.ma:.2f} {arrow}"
         )
 
     rows = []

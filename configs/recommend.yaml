@@ -1,7 +1,15 @@
 # 每日最终推荐规则（quant recommend 与默认飞书推送共用；改这里无需改代码）
 gate:
-  index: "000300.SH"    # 环境闸门：该指数收盘 >= ma_days 日均线才出手
-  ma_days: 20
+  indices:                # 环境闸门指数列表
+    - "000300.SH"         # 沪深300
+    - "000001.SH"         # 上证指数
+    - "399001.SZ"         # 深证成指
+    - "399006.SZ"         # 创业板指
+    - "000905.SH"         # 中证500
+    - "000852.SH"         # 中证1000
+    - "000688.SH"         # 科创50
+  ma_days: 20             # 日均线
+  mode: "all"             # 综合闸门规则：all=全部站上 | majority=多数 | any=任一 | hs300_and_any=沪深300+任一
 tiers:
   primary_strategies: ["limit_up_shakeout"]  # 命中即进重点档的策略
   primary_min_co: 3      # 或当日 >= N 个策略共振也进重点档

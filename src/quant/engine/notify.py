@@ -331,35 +331,59 @@ def build_combined_message(date: str | None = None) -> FeishuMessage:
 
 
 def build_recommend_message(date: str | None = None,
-                            config: recommend.RecommendConfig | None = None
+                            config: recommend.RecommendConfig | None = None,
+                            ignore_gate: bool = True
                             ) -> FeishuMessage:
-    """今日最终推荐卡片：环境闸门状态 + 分层推荐 + 交易纪律一行。"""
+    """今日最终推荐卡片：七个指数闸门状态 + 分层推荐 + 交易纪律一行。"""
     config = config or recommend.load_config()
-    result = recommend.build_recommendations(date, config)
-    index_name = recommend.INDEX_NAMES_ZH.get(config.gate_index, config.gate_index)
+    result = recommend.build_recommendations(date, config,
+                                             ignore_gate=ignore_gate)
     date_text = _display_date(result.date)
     title = f"【{RECOMMEND_MESSAGE_KEY}】{date_text}"
 
-    if not result.gate_open:
-        line = (f"今日不出手：{index_name} 收盘 "
-                f"{_fmt(result.index_close, '.2f')} 低于 "
-                f"{config.gate_ma_days} 日均线 {_fmt(result.index_ma, '.2f')}")
-        return FeishuMessage(title, (line,), False, "grey")
+    lines: list[str] = []
+    statuses = result.index_statuses
+    if statuses:
+        open_count = sum(1 for s in statuses if s.above)
+        lines.append(
+            f"环境闸门：{open_count}/{len(statuses)} 个指数站上 "
+            f"{config.gate_ma_days} 日均线"
+        )
+        arrow = lambda above: "↑" if above else "↓"
+        for s in statuses:
+            lines.append(
+                f"• {s.name} {_fmt(s.close, '.2f')} / "
+                f"MA{config.gate_ma_days} {_fmt(s.ma, '.2f')} {arrow(s.above)}"
+            )
+    else:
+        # 兼容旧数据：只有单一参考指数时降级显示
+        index_name = recommend.INDEX_NAMES_ZH.get(config.gate_index,
+                                                   config.gate_index)
+        if result.gate_open:
+            lines.append(
+                f"环境开：{index_name} 收盘 {_fmt(result.index_close, '.2f')} ≥ "
+                f"{config.gate_ma_days} 日均线 {_fmt(result.index_ma, '.2f')}"
+            )
+        else:
+            lines.append(
+                f"今日不出手：{index_name} 收盘 {_fmt(result.index_close, '.2f')} "
+                f"低于 {config.gate_ma_days} 日均线 "
+                f"{_fmt(result.index_ma, '.2f')}"
+            )
 
-    if not result.primary and not result.secondary:
-        return FeishuMessage(title, ("今日无符合推荐条件的股票",), False, "grey")
+    picks = (*result.primary, *result.secondary)
+    if not picks:
+        lines.append("今日无符合推荐条件的股票")
+        return FeishuMessage(title, tuple(lines), False, "grey")
 
     title = (f"{title} 重点 {len(result.primary)} · 备选 {len(result.secondary)}")
-    lines = [
-        f"环境开：{index_name} 收盘 {_fmt(result.index_close, '.2f')} ≥ "
-        f"{config.gate_ma_days} 日均线 {_fmt(result.index_ma, '.2f')}",
-    ]
-    for index, pick in enumerate((*result.primary, *result.secondary), start=1):
+    for index, pick in enumerate(picks, start=1):
         stock = _format_stock(index, pick.name, pick.industry, pick.raw_close)
         detail = "、".join(f"{label}({rank})" for label, rank in pick.hits)
         lines.append(f"【{pick.tier}】{stock} — {detail}")
     lines.append("纪律：T+1 开盘买入，T+2 收盘卖出（最多持有到 T+3）")
     return _finish(title, lines, True)
+
 
 
 def build_default_messages(date: str | None = None) -> dict[str, FeishuMessage]:

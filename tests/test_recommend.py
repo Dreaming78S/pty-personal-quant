@@ -93,6 +93,7 @@ def test_load_config_reads_yaml_overrides(tmp_path):
         "gate:\n"
         "  index: \"000905.SH\"\n"
         "  ma_days: 30\n"
+        "  mode: \"majority\"\n"
         "tiers:\n"
         "  primary_strategies: [\"limit_up_shakeout\", \"ma_volume\"]\n"
         "  primary_min_co: 4\n"
@@ -105,11 +106,32 @@ def test_load_config_reads_yaml_overrides(tmp_path):
 
     assert config.gate_index == "000905.SH"
     assert config.gate_ma_days == 30
+    assert config.gate_indices == ("000905.SH",)
+    assert config.gate_mode == "majority"
     assert config.primary_strategies == ("limit_up_shakeout", "ma_volume")
     assert config.primary_min_co == 4
     assert config.secondary_min_co == 2
     assert config.secondary_max_rank == 8
     assert config.max_picks == 6
+
+
+def test_load_config_reads_multi_index(tmp_path):
+    path = tmp_path / "recommend.yaml"
+    path.write_text(
+        "gate:\n"
+        "  indices: [\"000300.SH\", \"000688.SH\"]\n"
+        "  ma_days: 10\n"
+        "  mode: \"any\"\n"
+        "max_picks: 5\n",
+        encoding="utf-8")
+
+    config = recommend.load_config(path)
+
+    assert config.gate_index == "000300.SH"
+    assert config.gate_indices == ("000300.SH", "000688.SH")
+    assert config.gate_mode == "any"
+    assert config.gate_ma_days == 10
+    assert config.max_picks == 5
 
 
 def test_market_gate_open_when_index_above_ma(monkeypatch):
@@ -162,6 +184,10 @@ def test_build_recommendations_tiers_reasons_and_order(monkeypatch):
     assert result.gate_open is True
     assert result.index_close == 11.0
     assert result.index_ma == pytest.approx(10.05)
+    assert len(result.index_statuses) == len(_CFG.gate_indices)
+    hs300 = next(s for s in result.index_statuses if s.ts_code == "000300.SH")
+    assert hs300.above is True
+    assert hs300.close == 11.0
     assert [pick.ts_code for pick in result.primary] == ["000002.SZ", "000001.SZ"]
     assert [pick.ts_code for pick in result.secondary] == ["000003.SZ"]
 
@@ -234,3 +260,28 @@ def test_build_recommendations_high_co_without_rank_still_primary(monkeypatch):
 
     assert [pick.ts_code for pick in result.primary] == ["000004.SZ"]
     assert result.secondary == ()
+
+
+def test_market_gates_returns_status_per_index(monkeypatch):
+    monkeypatch.setattr(recommend.loader, "load_benchmark",
+                        lambda code, start, end: _open_benchmark())
+
+    cfg = recommend.RecommendConfig(gate_indices=("000300.SH", "000688.SH"))
+    statuses, gate_open = recommend.market_gates("20260918", config=cfg)
+
+    assert len(statuses) == 2
+    assert gate_open is True
+    assert all(s.above for s in statuses)
+    hs300 = next(s for s in statuses if s.ts_code == "000300.SH")
+    assert hs300.close == 11.0
+    assert hs300.name == "沪深300"
+
+
+def test_build_recommendations_ignore_gate_returns_picks_when_closed(monkeypatch):
+    _patch_common(monkeypatch, _scenario_frames(), benchmark=_closed_benchmark())
+
+    result = recommend.build_recommendations(
+        "20260918", config=_CFG, ignore_gate=True)
+
+    assert result.gate_open is False
+    assert [pick.ts_code for pick in result.primary] == ["000002.SZ", "000001.SZ"]

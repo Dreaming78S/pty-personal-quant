@@ -20,8 +20,8 @@ uv run quant select -s ma_volume -n 50           # 只输出前 50 只
 uv run quant select -s ma_volume --boards all    # 不限板块（main,gem,star,bse 可逗号组合）
 uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17   # 默认等权买入全部信号股
 uv run quant hits update -s all                  # 回填/增量写入 hit_<策略> 历史命中表
-uv run quant recommend                           # 显示当日最终推荐（环境闸门 + 分层，只读不推送）
-uv run quant notify                              # 飞书推送默认两张卡：今日最终推荐 + 多策略共振
+uv run quant recommend                           # 显示当日最终推荐（七个指数闸门 + 分层，只读不推送）
+uv run quant notify                              # 飞书推送默认两张卡：今日最终推荐（列七指数） + 多策略共振
 uv run quant notify -s all --dry-run             # 只打印不发送，预览旧版全部策略卡（含共振、复合）
 ```
 
@@ -31,7 +31,7 @@ uv run quant notify -s all --dry-run             # 只打印不发送，预览�
 uv run quant data update     # 1. 行情增量入库（建议交易日 17:30 后执行）
 uv run quant hits update     # 2. 各策略命中表增量写入（可 -s 指定策略）
 uv run quant data status     # 3. 校验各 hit_<策略> 水位线已追平最新交易日
-uv run quant recommend       # 4. 输出当日最终推荐（可选，只读）
+uv run quant recommend       # 4. 输出当日最终推荐（可选，列七个指数状态）
 uv run quant notify          # 5. 飞书推送默认两张卡（可选）
 ```
 
@@ -71,7 +71,7 @@ uv run quant bot serve                                  # 启动长连接常驻�
 
 - 在 `.env` 配置自定义机器人 webhook：`feishu_webhook_url`（必填）；机器人开启"签名校验"时再加 `feishu_webhook_secret`（可选，自动加签）
 - `uv run quant notify`（默认）：只发两张卡，解决"推荐太多不知道选哪个"的问题：
-  - **今日最终推荐**：基于沪深300 ≥ 20 日均线的环境闸门，把当日命中按规则分层为「重点」「备选」，最多 10 只；纪律为 T+1 开盘买入、T+2 收盘卖出（最多 T+3），不随盘中小赚就跑。闸门关闭时推荐区域提示空仓，但仍会发共振卡。
+  - **今日最终推荐**：列出 **沪深300、上证、深证、创业板、中证500、中证1000、科创50** 七个指数与 20 日均线的关系（↑/↓），然后按规则分层为「重点」「备选」，最多 10 只；纪律为 T+1 开盘买入、T+2 收盘卖出（最多 T+3），不随盘中小赚就跑。即使真实闸门未全开，也会把股票列出来作为观察清单，方便你综合判断。
   - **多策略共振**：当日被 ≥2 个策略命中的股票（始终按全部已注册策略统计），按策略数降序、成交额降序，每行附命中策略，橙色卡片头。
 - `uv run quant notify -s <策略名>` 或 `-s all` 切回旧版单策略/全策略卡片模式，`--no-co` 在该模式下跳过两张共振类卡片；`-d` 指定交易日（默认最新）、`--dry-run` 只打印不发送
 - 附带的「5日复合共振（当日含 rise_shrink_pullback）」卡片：仅在 `-s all` 模式下跟随共振类卡片；当日命中 `rise_shrink_pullback`、且近 5 个交易日（含当日）命中过其他策略的股票，按其他策略数降序、成交额降序，行内列出策略名与命中日期（如 `rps_breakout(09-15、09-16)`），紫色卡片头
