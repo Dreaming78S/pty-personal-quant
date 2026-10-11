@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "pandas>=2.2",
+    "numpy>=1.26",
     "pyarrow>=16.0",
     "pymysql>=1.1",
     "tushare>=1.4",
