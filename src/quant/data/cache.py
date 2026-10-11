@@ -114,16 +114,19 @@ def load_table(table: str, columns: list[str] | None = None,
     if not path.exists():
         raise FileNotFoundError(f"缓存缺失：{path}，请先运行 quant data update")
 
-    filters = None
-    date_col = schemas.date_column(table)
-    if date_col and (start or end):
-        filters = []
+    # 日期与代码都下推到 pyarrow（ts_codes 用 in 谓词，与列投影相互独立），
+    # 单股票查询免读全文件
+    has_ts_code = "ts_code" in schemas.columns_of(table)
+    filters = []
+    if date_col_exists := schemas.date_column(table):
         if start:
-            filters.append((date_col, ">=", start))
+            filters.append((date_col_exists, ">=", start))
         if end:
-            filters.append((date_col, "<=", end))
+            filters.append((date_col_exists, "<=", end))
+    if ts_codes is not None and has_ts_code:
+        filters.append(("ts_code", "in", list(ts_codes)))
 
-    df = pd.read_parquet(path, columns=columns, filters=filters)
+    df = pd.read_parquet(path, columns=columns, filters=filters or None)
     if df.empty:
         df = pd.DataFrame(
             columns=columns if columns is not None else schemas.columns_of(table)
