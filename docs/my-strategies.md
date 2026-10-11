@@ -8,7 +8,7 @@
 - **价格口径**：形态、均线、动量等一律使用**后复权价**（`open/high/low/close`，等效分红再投资）；**涨停/跌停判定使用不复权真实价** `raw_close`（行情界面价），因为涨跌停是按真实价格触发的。
 - **单位**：`amount` 为千元（Tushare 原始单位，策略内乘 1000 换算为元）；`circ_mv` 为万元；`vol` 为手。
 - **参数配置**：代码内为默认值，实际生效值取 `configs/strategies/<策略名>.yaml`；`params` 含义见各策略的参数表。
-- **修改参数后必须重算历史命中表**：`uv run quant hits update -s <策略名> --from-date 2024-01-01`（详细流程见 README「策略变更标准操作流程」）。`quant select` 是实时计算，改完 yaml 立即生效、无需重算。
+- **修改参数后必须重算历史命中表**：`uv run quant hits update -s <策略名> --from-date 2024-01-01`（`rise_shrink_pullback` 例外：自 2026-01-01 起记录，重算用 `--from-date 2026-01-01`；详细流程见 README「策略变更标准操作流程」）。`quant select` 是实时计算，改完 yaml 立即生效、无需重算。
 - **暖机（warmup_days）**：引擎为每只股票在信号日之前额外加载的交易日数；信号日 T 实际可用的 K 线数为 `暖机 + 1`（含 T 当日）。行数不足时窗口值为 NaN、该日不产生信号。
 - **排序分与 rank**：每日命中股票按 `score` 降序编号为 `rank`。`score` 由策略的排序口径决定（多数为成交额），仅影响输出顺序与限量（`-n`），不影响是否命中。
 
@@ -24,7 +24,7 @@
 | 6 | `rps_breakout` | 120 日 RPS≥90 且接近 120 日高点 | 121 | RPS 值 | `window=120`, `rps_threshold=90`, `high_ratio=0.9`, `high_min_bars=60` |
 | 7 | `rise_shrink_pullback` | 近 M 日涨超 X% 后缩量阴线回调 | 11 | 成交额 | `rise_days=10`, `rise_pct=25.0`, `pullback_days=3`, `min_bearish=2`, `vol_shrink=0.80`, `bearish_mode=close_below_open` |
 
-> 注：`ma_volume` 当前 yaml 已将 `vol_ma` 调为 `10`、`vol_ratio` 调为 `1.8`（覆盖代码默认值），其余策略 yaml 与默认值一致。
+> 注：yaml 覆盖了代码默认值的策略：`ma_volume`（`vol_ma=10`、`vol_ratio=1.8`）、`rise_shrink_pullback`（`rise_pct=20.0`、`vol_shrink=0.85`）；其余策略 yaml 与默认值一致。
 
 ---
 

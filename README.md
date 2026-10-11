@@ -1,11 +1,11 @@
 # my-a-stock-quant
 
-个人 A 股量化选股与回测系统：Tushare 日线数据 → 阿里云 MySQL → 本地 Parquet 缓存 → 策略选股 / 回测报告。
+个人 A 股量化选股与回测系统：Tushare 日线数据 → 本机 MySQL → 本地 Parquet 缓存 → 策略选股 / 回测报告。
 
 ## 环境准备
 
 1. 安装 [uv](https://docs.astral.sh/uv/)，执行 `uv sync`
-2. 复制 `.env.example` 为 `.env`，填入阿里云 RDS 与 Tushare token（飞书通知可选：填 `feishu_webhook_url`，机器人开启签名校验再加 `feishu_webhook_secret`，见「飞书通知」）
+2. 复制 `.env.example` 为 `.env`，填入本机 MySQL 连接（变量名沿用 `aliyun_rds_*`）与 Tushare token（飞书通知可选：填 `feishu_webhook_url`，机器人开启签名校验再加 `feishu_webhook_secret`，见「飞书通知」）
 3. `uv run quant data init-db` 建表
 4. `uv run quant data update` 首次全量入库（缺省按交易日历增量，可中断续跑）
 
@@ -56,11 +56,11 @@ uv run quant bot serve                                  # 启动长连接常驻�
 
 - 需要 `.env` 配置 `feishu_app_id`、`feishu_app_secret`、`deepseek_api_key`（可选 `deepseek_base_url`、`deepseek_model`）
 - 飞书开放平台需把事件订阅方式设为「长连接」、订阅 `im.message.receive_v1`，并开通 `im:message:send_as_bot`（回复）与私聊 `im:message` 权限；群聊**只**授 `im:message.group_at_msg:readonly`（仅接收 @机器人 的消息，避免机器人响应群里未 @ 的普通消息）后发布版本
-- 安全边界：只允许单条 `SELECT`/`WITH`、表白名单（`schemas` 中全部表）、`START TRANSACTION READ ONLY`、结果最多 200 行、查询超时 15 秒
+- 安全边界：只允许单条 `SELECT`/`WITH`、表白名单（`schemas` 中 20 张行情与命中表，不含 3 张遗留存档表）、`START TRANSACTION READ ONLY`、结果最多 200 行、查询超时 15 秒
 
 ## 策略历史命中（hit_&lt;策略&gt;）
 
-- `uv run quant hits update -s all` 把每个策略历史上每日全部命中的股票写入对应 `hit_<策略名>` 表；默认从 2024-01-01 回填，水位线存 `ingest_log`，可增量续跑、幂等重跑
+- `uv run quant hits update -s all` 把每个策略历史上每日全部命中的股票写入对应 `hit_<策略名>` 表；默认从 2024-01-01 回填，水位线存 `ingest_log`，可增量续跑、幂等重跑；例外：`rise_shrink_pullback` 2026-01 上线，命中表实际自 2026-01-05 起，如需与其余策略同步可显式 `--from-date 2024-01-01` 回填
 - 显式传 `--from-date` 视为重算：先清空该区间旧命中再重新计算（策略口径调整后用它刷新历史）
 - 口径与 `select` 一致：沪深主板、非ST、上市≥60日、非停牌；`rank` 按 score 降序编号，`score` 为该策略排序分（成交额 / 流通市值 / RPS），`params` 保存当次运行的策略参数快照
 - 字段：`industry`（行业快照）、`prev_hit`（同策略上一交易日是否命中）、`hit_3d/hit_5d/hit_10d`（同策略前 3/5/10 个交易日命中天数，不含当日、停牌日占窗口）、`streak`（同策略连续命中天数，含当日）
@@ -83,6 +83,7 @@ uv run quant bot serve                                  # 启动长连接常驻�
 - 行情：`daily`（日线）、`adj_factor`（复权因子）、`daily_basic`（每日指标，含 `limit_status` 涨跌停状态）、`suspend_d`（停牌）、`stk_limit`（涨跌停价）、`index_daily`（指数日线，覆盖沪深300、上证指数、深证成指、创业板指、中证500、中证1000、科创50、北证50 共 8 个宽基指数，按指数逐只区间抓取）
 - 参考：`stock_basic`（股票基础信息）、`trade_cal`（交易日历）、`namechange`（名称变更）
 - 新增：`stock_company`（上市公司基本信息）、`new_share`（IPO 新股列表）、`stk_holdertrade`（股东增减持，按公告日逐自然日抓取）
+- 历史遗留（原 Web 平台，已无读写代码）：`strategy_definitions`（自定义策略定义与版本）、`backtest_runs`（回测运行记录）、`backtest_trades`（回测交易明细），`data init-db` 仍会创建以保留库内存量数据（共 23 张：13 基础 + 7 hit + 3 遗留）
 
 ### 升级/补数据
 
@@ -220,6 +221,8 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 uv run pytest                              # 单元测试
 $env:RUN_INTEGRATION=1; uv run pytest -m integration   # 真实 MySQL/Tushare 集成测试
 ```
+
+- 覆盖范围含回测引擎（`test_backtest.py`）与因果性测试（仅用 T 日数据、T+1 结构性等）
 
 ## 风险提示
 
