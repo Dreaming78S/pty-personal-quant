@@ -357,10 +357,101 @@ HIT_TABLES: dict[str, TableSpec] = {
     for strategy in HIT_STRATEGIES
 }
 
+# 历史遗留存档表（原 Web 平台，已无读写代码路径，仅 init-db 创建以保留存量数据）。
+# 独立于 TABLES/HIT_TABLES，不参与 Tushare 抓取、Parquet 缓存镜像、bot 查询白名单与 data status。
+APP_TABLES: dict[str, TableSpec] = {
+    "strategy_definitions": TableSpec(
+        name="strategy_definitions",
+        columns=("id", "name", "description", "config_json", "version"),
+        date_column=None,
+        ddl="""
+CREATE TABLE IF NOT EXISTS strategy_definitions (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(64) NOT NULL COMMENT '策略名称',
+  description VARCHAR(255) COMMENT '描述',
+  config_json MEDIUMTEXT NOT NULL COMMENT '完整配置快照(条件树+买卖规则+费用)',
+  version INT NOT NULL DEFAULT 1 COMMENT '版本号：修改=新行递增，不覆盖旧行',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  UNIQUE KEY uk_name_version (name, version)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='自定义策略定义'
+""",
+    ),
+    "backtest_runs": TableSpec(
+        name="backtest_runs",
+        columns=("id", "name", "strategy_id", "strategy_version", "config_json",
+                 "config_hash", "start_date", "end_date", "data_version",
+                 "status", "error", "metrics_json", "signal_count",
+                 "trade_count", "finished_at"),
+        date_column=None,
+        ddl="""
+CREATE TABLE IF NOT EXISTS backtest_runs (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(128) COMMENT '回测名称',
+  strategy_id BIGINT COMMENT '关联 strategy_definitions.id，自由配置回测为空',
+  strategy_version INT COMMENT '关联策略版本',
+  config_json MEDIUMTEXT NOT NULL COMMENT '完整运行配置(含费用)',
+  config_hash CHAR(64) NOT NULL COMMENT 'sha256(规范化配置+区间+费用+数据版本)',
+  start_date CHAR(8) COMMENT '信号日起始',
+  end_date CHAR(8) COMMENT '信号日结束',
+  data_version CHAR(8) COMMENT '运行时 daily 水位线(缓存失效判据)',
+  status VARCHAR(16) NOT NULL DEFAULT 'running' COMMENT 'running/succeeded/failed',
+  error TEXT COMMENT '失败原因',
+  metrics_json MEDIUMTEXT COMMENT '核心指标 JSON',
+  signal_count INT COMMENT '信号数',
+  trade_count INT COMMENT '实际成交数',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  finished_at DATETIME COMMENT '完成时间',
+  KEY idx_config_hash (config_hash),
+  KEY idx_created (created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回测运行记录'
+""",
+    ),
+    "backtest_trades": TableSpec(
+        name="backtest_trades",
+        columns=("id", "run_id", "ts_code", "name", "signal_date",
+                 "strategies_json", "entry_date", "entry_price", "exit_date",
+                 "exit_price", "shares", "gross_pnl", "fees", "net_pnl",
+                 "ret_pct", "exit_reason"),
+        date_column=None,
+        ddl="""
+CREATE TABLE IF NOT EXISTS backtest_trades (
+  id BIGINT AUTO_INCREMENT PRIMARY KEY,
+  run_id BIGINT NOT NULL COMMENT '所属 backtest_runs.id',
+  ts_code VARCHAR(12) NOT NULL COMMENT 'TS代码',
+  name VARCHAR(32) COMMENT '股票名称',
+  signal_date CHAR(8) NOT NULL COMMENT '信号日 T',
+  strategies_json VARCHAR(512) COMMENT '信号日命中策略快照(JSON数组)',
+  entry_date CHAR(8) COMMENT '买入日',
+  entry_price DECIMAL(12,4) COMMENT '买入价(含滑点)',
+  exit_date CHAR(8) COMMENT '卖出日',
+  exit_price DECIMAL(12,4) COMMENT '卖出价(含滑点)',
+  shares INT COMMENT '股数',
+  gross_pnl DECIMAL(16,4) COMMENT '毛利(卖出净额-买入金额,不含费用)',
+  fees DECIMAL(16,4) COMMENT '买卖双边费用合计',
+  net_pnl DECIMAL(16,4) COMMENT '净利=毛利-费用',
+  ret_pct DECIMAL(10,4) COMMENT '净收益率%(net_pnl/买入金额)',
+  exit_reason VARCHAR(32) COMMENT 'planned/delisted/data_end',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  KEY idx_run (run_id),
+  KEY idx_run_code (run_id, ts_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='回测交易明细'
+""",
+    ),
+}
+
+
+def create_app_tables() -> list[str]:
+    for spec in APP_TABLES.values():
+        db.execute(spec.ddl)
+    return list(APP_TABLES)
+
 
 def columns_of(table: str) -> list[str]:
     if table in HIT_TABLES:
         return list(HIT_TABLES[table].columns)
+    if table in APP_TABLES:
+        return list(APP_TABLES[table].columns)
     return list(TABLES[table].columns)
 
 
@@ -371,6 +462,8 @@ def create_hit_tables() -> list[str]:
 
 
 def date_column(table: str) -> str | None:
+    if table in APP_TABLES:
+        return APP_TABLES[table].date_column
     return TABLES[table].date_column
 
 

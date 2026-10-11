@@ -9,12 +9,24 @@ app.add_typer(hits_app, name="hits")
 app.add_typer(bot_app, name="bot")
 
 
+@app.callback()
+def _chdir_to_project_root() -> None:
+    import os
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[2]
+    if (root / "pyproject.toml").is_file() and Path.cwd().resolve() != root:
+        typer.echo(f"工作目录已切换到项目根：{root}")
+        os.chdir(root)
+
+
 @data_app.command("init-db")
 def data_init_db() -> None:
-    """在 MySQL 中创建全部数据表（含 hit_<策略>）并补齐已有表的缺失列（幂等）。"""
+    """在 MySQL 中创建全部数据表（含 hit_<策略> 与历史遗留存档表）并补齐已有表的缺失列（幂等）。"""
     from quant.data import schemas
 
-    names = schemas.create_all() + schemas.create_hit_tables()
+    names = (schemas.create_all() + schemas.create_hit_tables()
+             + schemas.create_app_tables())
     typer.echo(f"已创建/确认 {len(names)} 张表：{', '.join(names)}")
     migrated = schemas.migrate() + schemas.migrate_hit_columns()
     if migrated:
