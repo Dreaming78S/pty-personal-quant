@@ -1,24 +1,24 @@
 # my-a-stock-quant
 
-个人 A 股量化选股与回测系统：Tushare 日线数据 → 本机 MySQL → 本地 Parquet 缓存 → 策略选股 / 回测报告。
+个人 A 股量化选股与回测系统：Tushare 日线数据 → MySQL（本机或阿里云 RDS）→ 本地 Parquet 缓存 → 策略选股 / 回测报告。
 
 ## 环境准备
 
 1. 安装 [uv](https://docs.astral.sh/uv/)，执行 `uv sync`
-2. 复制 `.env.example` 为 `.env`，填入本机 MySQL 连接（变量名沿用 `aliyun_rds_*`）与 Tushare token（飞书通知可选：填 `feishu_webhook_url`，机器人开启签名校验再加 `feishu_webhook_secret`，见「飞书通知」）
+2. 复制 `.env.example` 为 `.env`，填入 MySQL 连接（本机或阿里云 RDS，变量名沿用 `aliyun_rds_*`）与 Tushare token（飞书通知可选：填 `feishu_webhook_url`，机器人开启签名校验再加 `feishu_webhook_secret`，见「飞书通知」）
 3. `uv run quant data init-db` 建表
 4. `uv run quant data update` 首次全量入库（缺省按交易日历增量，可中断续跑）
 
 ## 常用命令
 
 ```bash
-uv run quant data status                         # 查看各表行数/水位线/缓存状态
+uv run quant data status                         # 查看各业务表行数/水位线/缓存状态
 uv run quant data update -t daily --from-date 2024-01-02 --to-date 2024-01-31
 uv run quant list                                # 已注册策略
 uv run quant select -s ma_volume                 # 选股（默认最新交易日、只选主板、输出全部命中）
 uv run quant select -s ma_volume -n 50           # 只输出前 50 只
 uv run quant select -s ma_volume --boards all    # 不限板块（main,gem,star,bse 可逗号组合）
-uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-09-17   # 默认等权买入全部信号股
+uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-10-23   # 示例区间；默认等权买入全部信号股
 uv run quant hits update -s all                  # 回填/增量写入 hit_<策略> 历史命中表
 uv run quant recommend                           # 显示当日最终推荐（七个指数闸门 + 分层，只读不推送）
 uv run quant notify                              # 飞书推送默认两张卡：今日最终推荐（列七指数） + 多策略共振
@@ -35,7 +35,7 @@ uv run quant recommend       # 4. 输出当日最终推荐（可选，列七个�
 uv run quant notify          # 5. 飞书推送默认两张卡（可选）
 ```
 
-- 更新与推送彼此独立：`notify` 只读命中表；推送已入库的历史日期用 `-d`，无需先跑数据更新；推送前可用 `--dry-run` 预览
+- 更新与推送彼此独立：`notify -s ...` 只读命中表；默认模式的“今日最终推荐”还会读取本地 `index_daily` 缓存（不会自动刷新），请确保缓存已到目标日期。推送已入库的历史日期用 `-d`，无需先跑数据更新；推送前可用 `--dry-run` 预览
 - 本地 `scripts/daily_update.py` 一键执行盘后流程（`--skip-notify` 可只更新不推送；非交易日自动跳过推送；`scripts/` 未纳入版本管理）
 - 定时任务（Windows 任务计划程序）：任务名 `MyAStockQuant_DailyUpdate`，每周一至周五 **17:30** 运行 `scripts/daily_update_task.cmd`（内部调用 `daily_update.py`，日志追加到 `logs/daily_update.log`）；任务为交互式运行（需处于登录状态），某步失败会返回非零退出码且不推送，稍后手动重跑即可
 
@@ -56,15 +56,15 @@ uv run quant bot serve                                  # 启动长连接常驻�
 
 - 需要 `.env` 配置 `feishu_app_id`、`feishu_app_secret`、`deepseek_api_key`（可选 `deepseek_base_url`、`deepseek_model`）
 - 飞书开放平台需把事件订阅方式设为「长连接」、订阅 `im.message.receive_v1`，并开通 `im:message:send_as_bot`（回复）与私聊 `im:message` 权限；群聊**只**授 `im:message.group_at_msg:readonly`（仅接收 @机器人 的消息，避免机器人响应群里未 @ 的普通消息）后发布版本
-- 安全边界：只允许单条 `SELECT`/`WITH`、表白名单（`schemas` 中 20 张行情与命中表，不含 3 张遗留存档表）、`START TRANSACTION READ ONLY`、结果最多 200 行、查询超时 15 秒
+- 安全边界：只允许单条 `SELECT`/`WITH`、表白名单（`schemas` 中 20 张业务表：13 张源表含 `ingest_log` + 7 张 `hit_*`；不含 3 张遗留存档表）、`START TRANSACTION READ ONLY`、结果最多 200 行、查询超时 15 秒
 
 ## 策略历史命中（hit_&lt;策略&gt;）
 
 - `uv run quant hits update -s all` 把每个策略历史上每日全部命中的股票写入对应 `hit_<策略名>` 表；默认从 2024-01-01 回填，水位线存 `ingest_log`，可增量续跑、幂等重跑；例外：`rise_shrink_pullback` 2026-01 上线，命中表实际自 2026-01-05 起，如需与其余策略同步可显式 `--from-date 2024-01-01` 回填
 - 显式传 `--from-date` 视为重算：先清空该区间旧命中再重新计算（策略口径调整后用它刷新历史）
-- 口径与 `select` 一致：沪深主板、非ST、上市≥60日、非停牌；`rank` 按 score 降序编号，`score` 为该策略排序分（成交额 / 流通市值 / RPS），`params` 保存当次运行的策略参数快照
+- 默认口径与 `select` 一致（沪深主板、非ST、上市≥60日、非停牌；`select` 可用 `--boards` 放宽）：`rank` 按 score 降序编号，`score` 为该策略排序分（成交额 / 流通市值 / RPS），`params` 保存当次运行的策略参数快照
 - 字段：`industry`（行业快照）、`prev_hit`（同策略上一交易日是否命中）、`hit_3d/hit_5d/hit_10d`（同策略前 3/5/10 个交易日命中天数，不含当日、停牌日占窗口）、`streak`（同策略连续命中天数，含当日）
-- 历史列只统计**表内已记录的命中**（即 2024-01-02 起），每行都可用表自身复核；命中计算加载完整历史面板，结果与水位线、重跑次数无关（单日 `select` 对暖机期内长期停牌股可能略有差异）
+- 历史列只统计**表内已记录的命中**（多数策略自 2024-01-02 起，`rise_shrink_pullback` 自 2026-01-05 起），每行都可用表自身复核；命中计算加载完整历史面板，结果与水位线、重跑次数无关（单日 `select` 对暖机期内长期停牌股可能略有差异）
 - 命中表是派生数据：不参与 Tushare 抓取、本地 Parquet 缓存与夜间全量重建清空；`quant data status` 可查看行数与水位线
 
 ## 飞书通知
@@ -73,17 +73,18 @@ uv run quant bot serve                                  # 启动长连接常驻�
 - `uv run quant notify`（默认）：只发两张卡，解决"推荐太多不知道选哪个"的问题：
   - **今日最终推荐**：列出 **沪深300、上证、深证、创业板、中证500、中证1000、科创50** 七个指数与 20 日均线的关系（↑/↓），然后按规则分层为「重点」「备选」，最多 10 只；纪律为 T+1 开盘买入、T+2 收盘卖出（最多 T+3），不随盘中小赚就跑。即使真实闸门未全开，也会把股票列出来作为观察清单，方便你综合判断。
   - **多策略共振**：当日被 ≥2 个策略命中的股票（始终按全部已注册策略统计），按策略数降序、成交额降序，每行附命中策略，橙色卡片头。
-- `uv run quant notify -s <策略名>` 或 `-s all` 切回旧版单策略/全策略卡片模式，`--no-co` 在该模式下跳过两张共振类卡片；`-d` 指定交易日（默认最新）、`--dry-run` 只打印不发送
+- `uv run quant notify -s <策略名>` 切回单策略卡片模式：该策略卡 + 多策略共振卡；`-s all` 切回全策略模式：全部策略卡 + 多策略共振卡 + 5日复合共振卡。`--no-co` 会跳过共振类卡片；`-d` 指定交易日（默认最新）、`--dry-run` 只打印不发送
 - 附带的「5日复合共振（当日含 rise_shrink_pullback）」卡片：仅在 `-s all` 模式下跟随共振类卡片；当日命中 `rise_shrink_pullback`、且近 5 个交易日（含当日）命中过其他策略的股票，按其他策略数降序、成交额降序，行内列出策略名与命中日期（如 `rps_breakout(09-15、09-16)`），紫色卡片头
-- 命中表未追平目标日期时报错并提示先执行 `quant hits update`，不会把"未更新"误报成"无命中"；单条发送失败不阻断其余卡片（网络类错误自动重试 2 次、间隔 1 秒），有失败时退出码为 1
-- 策略卡片内容（`-s` 模式）：标题为策略名+日期+命中数，正文按 rank 排序，每行「序号、名称（加粗）、不复权收盘价、行业」
+- 命中表未追平目标日期时报错并提示先执行 `quant hits update`，不会把"未更新"误报成"无命中"；单张卡片发送失败不阻断其余卡片（网络类错误自动重试 2 次、间隔 1 秒），有失败时退出码为 1
+- 策略卡片内容（`-s` 模式）：标题为策略名+日期（有命中时附命中数），正文按 rank 排序，每行「序号、名称（加粗）、不复权收盘价、行业」
 
 ## 数据表
 
-- 行情：`daily`（日线）、`adj_factor`（复权因子）、`daily_basic`（每日指标，含 `limit_status` 涨跌停状态）、`suspend_d`（停牌）、`stk_limit`（涨跌停价）、`index_daily`（指数日线，覆盖沪深300、上证指数、深证成指、创业板指、中证500、中证1000、科创50、北证50 共 8 个宽基指数，按指数逐只区间抓取）
+- 行情：`daily`（日线）、`adj_factor`（复权因子）、`daily_basic`（每日指标，含 `limit_status` 涨跌停状态）、`suspend_d`（停牌）、`stk_limit`（涨跌停价）、`index_daily`（指数日线，覆盖沪深300、上证指数、深证成指、创业板指、中证500、中证1000、科创50、北证50 共 8 个宽基指数，按指数逐只区间抓取；推荐闸门默认使用其中 7 个，不含北证50）
 - 参考：`stock_basic`（股票基础信息）、`trade_cal`（交易日历）、`namechange`（名称变更）
 - 新增：`stock_company`（上市公司基本信息）、`new_share`（IPO 新股列表）、`stk_holdertrade`（股东增减持，按公告日逐自然日抓取）
-- 历史遗留（原 Web 平台，已无读写代码）：`strategy_definitions`（自定义策略定义与版本）、`backtest_runs`（回测运行记录）、`backtest_trades`（回测交易明细），`data init-db` 仍会创建以保留库内存量数据（共 23 张：13 基础 + 7 hit + 3 遗留）
+- 历史遗留（原 Web 平台，已无读写代码）：`strategy_definitions`（自定义策略定义与版本）、`backtest_runs`（回测运行记录）、`backtest_trades`（回测交易明细），`data init-db` 仍会创建以保留库内存量数据（共 23 张：13 张源表含 `ingest_log` + 7 张 `hit_*` + 3 张遗留）
+- `loader` 以 `stock_basic` 的 `ts_code` 为准过滤行情；Tushare 代码变更留下的旧代码别名（如 `000022.SZ`、`000043.SZ`、`300114.SZ`）不会进入行情面板
 
 ### 升级/补数据
 
@@ -111,7 +112,7 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 - 日期参数、`--rate` 与 Tushare 客户端在清空之前校验/构造，参数写错不会清库
 - 不传 `--yes` 时会列出将被清空的表并要求输入 `YES` 确认；`--all-tables` 会清空当前库全部基础表（含非本系统表），请谨慎使用
 - `--skip-truncate` 不清空，按 `ingest_log` 水位线只补未入库的日期（没有水位线的表从起始日期拉取），快照表仍整体刷新，可安全重跑续传
-- 脚本位于本地 `scripts/` 目录（未纳入版本管理），按需本地维护
+- 脚本入口位于本地 `scripts/` 目录（未纳入版本管理）；重建编排逻辑在 `src/quant/maintenance.py`，便于测试与复用
 - 预计耗时约 2 小时（行情约 1.2 万次调用、150 次/分钟；股东增减持按自然日抓取、90 次/分钟）
 - 全量数据需预留数 GB MySQL 存储空间，请确认实例容量后再执行
 
@@ -137,7 +138,7 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 
 ## 策略变更标准操作流程
 
-策略的派生数据只有一张表：`hit_<策略>`（`select`/`backtest`/报告均为运行时现算，无需重建）。以下操作全部幂等、可重跑。
+策略的派生数据只有一张表：`hit_<策略>`（`select`/`backtest` 运行时现算；性能/共振报告读取命中表后现算，无需额外派生表）。以下操作全部幂等、可重跑。
 
 ### 新增策略
 

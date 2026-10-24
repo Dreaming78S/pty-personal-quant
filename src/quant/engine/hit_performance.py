@@ -71,6 +71,16 @@ def bucket_counts(stats: dict[str, int]) -> dict[str, int]:
     return {name: stats[name] for name in BUCKET_NAMES}
 
 
+def report_prefix(min_strategies: int, new_only: bool) -> str:
+    """多策略共振报告文件名前缀（非默认阈值或首次出现才追加后缀）。"""
+    parts = ["multi_strategy"]
+    if min_strategies != 2:
+        parts.append(f"{min_strategies}plus")
+    if new_only:
+        parts.append("new")
+    return "_".join(parts)
+
+
 def co_hit_starts(hits: pd.DataFrame, trade_dates, min_strategies: int = 2) -> pd.DataFrame:
     """共振段的首次出现事件：当日 ≥min_strategies 个策略命中，且前一交易日
     命中的策略数 ≤1（0 或 1 个，含未命中与停牌）。

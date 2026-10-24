@@ -1,5 +1,6 @@
 from typer.testing import CliRunner
 
+from quant import cli
 from quant.cli import app
 from quant.engine import recommend
 
@@ -47,3 +48,28 @@ def test_recommend_handles_stale_data(monkeypatch):
 
     assert result.exit_code == 1
     assert "index_daily" in result.output
+
+
+def test_ensure_utf8_output_reconfigures_stdout_and_stderr(monkeypatch):
+    class Stream:
+        def __init__(self):
+            self.kwargs = None
+
+        def reconfigure(self, **kwargs):
+            self.kwargs = kwargs
+
+    out, err = Stream(), Stream()
+    monkeypatch.setattr(cli.sys, "stdout", out)
+    monkeypatch.setattr(cli.sys, "stderr", err)
+
+    cli._ensure_utf8_output()
+
+    assert out.kwargs == {"encoding": "utf-8"}
+    assert err.kwargs == {"encoding": "utf-8"}
+
+
+def test_ensure_utf8_output_tolerates_stream_without_reconfigure(monkeypatch):
+    monkeypatch.setattr(cli.sys, "stdout", object())
+    monkeypatch.setattr(cli.sys, "stderr", object())
+
+    cli._ensure_utf8_output()

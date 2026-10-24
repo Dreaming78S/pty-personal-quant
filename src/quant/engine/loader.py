@@ -56,7 +56,11 @@ def build_market(daily: pd.DataFrame, adj_factor: pd.DataFrame,
                  namechange: pd.DataFrame, trade_cal: pd.DataFrame,
                  filters: UniverseFilters) -> pd.DataFrame:
     """合并各表：输出后复权 OHLC（open/high/low/close）+ raw_* 原始价 + 过滤标记。"""
-    df = daily.copy()
+    # Tushare 在代码变更/吸收合并后可能同时保留旧代码和新代码的日线。
+    # stock_basic 只包含当前有效代码（含退市），以此为准丢弃旧代码别名，
+    # 避免历史回测把同一家公司重复计算。
+    valid_codes = set(stock_basic["ts_code"].astype(str))
+    df = daily[daily["ts_code"].astype(str).isin(valid_codes)].copy()
     for col in ("open", "high", "low", "close", "pre_close"):
         df[f"raw_{col}"] = df[col]
 

@@ -118,6 +118,37 @@ def screen_ideas(hits: pd.DataFrame, trade_dates: Iterable[str],
     return out.sort_values(["trade_date", "ts_code"]).reset_index(drop=True)
 
 
+def run_signature(*, hold: int, t1_min_count: int,
+                  t1_strategies: tuple[str, ...], t2_min_count: int | None,
+                  t2_strategies: tuple[str, ...], cum_min_count: int | None,
+                  cum_strategies: tuple[str, ...],
+                  mv_min: float, mv_max: float,
+                  t2_max_count: int | None = None,
+                  cum_max_count: int | None = None) -> str:
+    """按回测参数生成报告文件名指纹（非默认参数才进入签名）。"""
+    parts = [f"n{hold}"]
+    t1 = f"t1ge{t1_min_count}"
+    if t1_strategies:
+        t1 += "-" + "+".join(t1_strategies)
+    parts.append(t1)
+    if t2_strategies or t2_min_count is not None:
+        t2 = "t2ge" + (str(t2_min_count) if t2_min_count is not None else "any")
+        if t2_strategies:
+            t2 += "-" + "+".join(t2_strategies)
+        parts.append(t2)
+    if t2_max_count is not None:
+        parts.append(f"t2le{t2_max_count}")
+    cum = "cumge" + (str(cum_min_count) if cum_min_count is not None else "any")
+    if cum_strategies:
+        cum += "-" + "+".join(cum_strategies)
+    parts.append(cum)
+    if cum_max_count is not None:
+        parts.append(f"cumle{cum_max_count}")
+    if (mv_min, mv_max) != (0.0, 50000.0):
+        parts.append(f"mv{mv_min:g}-{mv_max:g}")
+    return "_".join(parts)
+
+
 def filter_by_market_cap(entries: pd.DataFrame, market: pd.DataFrame,
                          mv_min_yi: float = 0.0,
                          mv_max_yi: float = 50000.0) -> pd.DataFrame:

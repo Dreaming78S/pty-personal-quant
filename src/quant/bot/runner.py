@@ -5,6 +5,7 @@ import logging
 import pandas as pd
 import pymysql
 
+from quant.bot import sql_guard
 from quant.config import get_settings
 
 SQL_TIMEOUT_SECONDS = 15
@@ -31,7 +32,10 @@ def run_readonly(sql: str, timeout: int = SQL_TIMEOUT_SECONDS) -> pd.DataFrame:
         with conn.cursor(pymysql.cursors.DictCursor) as cur:
             cur.execute("START TRANSACTION READ ONLY")
             cur.execute(sql)
-            rows = cur.fetchall()
+            rows = cur.fetchmany(sql_guard.MAX_ROWS + 1)
+            if len(rows) > sql_guard.MAX_ROWS:
+                raise RuntimeError(
+                    f"查询返回超过 {sql_guard.MAX_ROWS} 行，已中止")
     finally:
         try:
             conn.rollback()

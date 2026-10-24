@@ -1,3 +1,5 @@
+import sys
+
 import typer
 
 app = typer.Typer(help="A股量化选股与回测系统", no_args_is_help=True)
@@ -9,11 +11,25 @@ app.add_typer(hits_app, name="hits")
 app.add_typer(bot_app, name="bot")
 
 
+def _ensure_utf8_output() -> None:
+    """把控制台输出切到 UTF-8，避免 Windows GBK 下无法编码 `•` / 箭头。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError, OSError):
+            # 测试捕获流、已关闭流或特殊终端：保持原编码，不影响命令执行
+            pass
+
+
 @app.callback()
 def _chdir_to_project_root() -> None:
     import os
     from pathlib import Path
 
+    _ensure_utf8_output()
     root = Path(__file__).resolve().parents[2]
     if (root / "pyproject.toml").is_file() and Path.cwd().resolve() != root:
         typer.echo(f"工作目录已切换到项目根：{root}")

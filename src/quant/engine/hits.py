@@ -30,7 +30,9 @@ def _strategy_params(name: str) -> dict:
 
 def _resolve_strategies(strategy: str) -> list[str]:
     if strategy.strip().lower() in ("", "all"):
-        return sorted(list_strategies())
+        # 按 HIT_STRATEGIES 顺序执行，保证 -s all 的输出顺序与
+        # data status / recommend 一致（README 已如此约定）。
+        return list(schemas.HIT_STRATEGIES)
     names = [part.strip() for part in strategy.split(",") if part.strip()]
     known = list_strategies()
     unknown = [name for name in names if name not in known]

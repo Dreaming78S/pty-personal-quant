@@ -38,6 +38,79 @@ def test_validate_strips_comments_and_trailing_semicolon():
                         allowed=ALLOWED).endswith("LIMIT 200")
 
 
+def test_validate_hash_comment_does_not_swallow_limit():
+    sql = validate_sql("SELECT * FROM daily # 行尾注释",
+                       allowed=ALLOWED)
+
+    assert "#" not in sql
+    assert sql == "SELECT * FROM daily LIMIT 200"
+
+
+def test_validate_keeps_hash_inside_string_literal():
+    sql = validate_sql("SELECT * FROM daily WHERE name = 'a#b'",
+                       allowed=ALLOWED)
+
+    assert "'a#b'" in sql
+    assert sql.endswith("LIMIT 200")
+
+
+def test_validate_keeps_double_dash_inside_string_literal():
+    sql = validate_sql("SELECT * FROM daily WHERE note = 'a--b'",
+                       allowed=ALLOWED)
+
+    assert "'a--b'" in sql
+    assert sql.endswith("LIMIT 200")
+
+
+def test_validate_keeps_block_comment_inside_string_literal():
+    sql = validate_sql("SELECT * FROM daily WHERE note = 'a/*b*/c'",
+                       allowed=ALLOWED)
+
+    assert "'a/*b*/c'" in sql
+    assert sql.endswith("LIMIT 200")
+
+
+def test_validate_keeps_comment_markers_inside_backtick_identifier():
+    sql = validate_sql("SELECT `a#b`, `c--d` FROM daily", allowed=ALLOWED)
+
+    assert "`a#b`" in sql
+    assert "`c--d`" in sql
+    assert sql.endswith("LIMIT 200")
+
+
+def test_validate_hash_comment_preserves_newline_between_statements():
+    with pytest.raises(SqlRejected, match="只允许单条语句"):
+        validate_sql("SELECT * FROM daily # 注释\n; DROP TABLE daily",
+                     allowed=ALLOWED)
+
+
+def test_validate_strips_mysql_executable_comment():
+    sql = validate_sql("SELECT * FROM daily /*!50100 WHERE 1=1 */",
+                       allowed=ALLOWED)
+
+    assert "/*!" not in sql
+    assert "WHERE" not in sql
+    assert sql == "SELECT * FROM daily LIMIT 200"
+
+
+def test_validate_preserves_newline_when_stripping_block_comment():
+    sql = validate_sql("SELECT * FROM daily /* 多行\n注释 */ WHERE close > 1",
+                       allowed=ALLOWED)
+
+    assert "/*" not in sql
+    assert "\n" in sql
+    assert sql.endswith("LIMIT 200")
+    assert "WHERE close > 1" in sql
+
+
+def test_validate_block_comment_without_newline_keeps_token_boundary():
+    sql = validate_sql("SELECT * FROM daily/*x*/WHERE close > 1",
+                       allowed=ALLOWED)
+
+    assert "/*" not in sql
+    assert sql == "SELECT * FROM daily WHERE close > 1 LIMIT 200"
+
+
 @pytest.mark.parametrize("sql", [
     "SELECT 1 FROM daily; DROP TABLE daily",
     "UPDATE daily SET close = 1",

@@ -68,6 +68,107 @@ def test_ensure_cache_appends_delta(monkeypatch):
     assert seen["params"] == ("20240102",)
 
 
+def test_ensure_cache_discards_rows_newer_than_db(monkeypatch):
+    """缓存水位线比 DB 新时整表重读，不能保留 DB 中已不存在的日期。"""
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240105")
+    _fake_db(monkeypatch, lambda sql, params: pd.DataFrame({
+        "ts_code": ["000001.SZ", "000001.SZ"],
+        "trade_date": ["20240104", "20240105"],
+        "close": [10.0, 11.0],
+    }))
+    cache.ensure_cache("daily")
+
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240102")
+    seen = {}
+
+    def full_read(sql, params=None):
+        seen["sql"] = sql
+        seen["params"] = params
+        return pd.DataFrame({
+            "ts_code": ["000001.SZ"],
+            "trade_date": ["20240102"],
+            "close": [9.0],
+        })
+
+    monkeypatch.setattr(cache.db, "read_df", full_read)
+    cache.ensure_cache("daily")
+
+    df = pd.read_parquet(cache.cache_path("daily"))
+    assert list(df["trade_date"]) == ["20240102"]
+    assert seen["params"] is None
+    assert "WHERE" not in seen["sql"]
+    meta = json.loads(
+        (cache.cache_dir() / "daily.meta.json").read_text(encoding="utf-8"))
+    assert meta["watermark"] == "20240102"
+    assert meta["rows"] == 1
+
+
+def test_ensure_cache_discards_rows_when_meta_missing(monkeypatch):
+    """没有 meta 时不能把现有 Parquet 与整表重读结果拼接。"""
+    cache.cache_dir().mkdir(parents=True, exist_ok=True)
+    pd.DataFrame({
+        "ts_code": ["000001.SZ"], "trade_date": ["20240105"], "close": [10.0],
+    }).to_parquet(cache.cache_path("daily"), index=False)
+
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240102")
+    monkeypatch.setattr(cache.db, "read_df", lambda sql, params=None: pd.DataFrame({
+        "ts_code": ["000001.SZ"], "trade_date": ["20240102"], "close": [9.0],
+    }))
+
+    cache.ensure_cache("daily")
+
+    df = pd.read_parquet(cache.cache_path("daily"))
+    assert list(df["trade_date"]) == ["20240102"]
+
+
+def test_ensure_cache_discards_rows_when_db_watermark_missing(monkeypatch):
+    """数据库水位线消失（空库/回滚）时不能保留旧镜像。"""
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240105")
+    _fake_db(monkeypatch, lambda sql, params: pd.DataFrame({
+        "ts_code": ["000001.SZ"], "trade_date": ["20240105"], "close": [10.0],
+    }))
+    cache.ensure_cache("daily")
+
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: None)
+    monkeypatch.setattr(cache.db, "read_df",
+                        lambda sql, params=None: pd.DataFrame())
+
+    cache.ensure_cache("daily")
+
+    df = pd.read_parquet(cache.cache_path("daily"))
+    assert df.empty
+    meta = json.loads(
+        (cache.cache_dir() / "daily.meta.json").read_text(encoding="utf-8"))
+    assert meta["watermark"] is None
+
+
+def test_ensure_cache_uses_increment_when_cache_is_behind(monkeypatch):
+    """缓存比 DB 旧时仍只拉取水位线之后的增量。"""
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240102")
+    _fake_db(monkeypatch, lambda sql, params: pd.DataFrame({
+        "ts_code": ["000001.SZ"], "trade_date": ["20240102"], "close": [10.0],
+    }))
+    cache.ensure_cache("daily")
+
+    monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240103")
+    seen = {}
+
+    def increment(sql, params=None):
+        seen["sql"] = sql
+        seen["params"] = params
+        return pd.DataFrame({
+            "ts_code": ["000001.SZ"], "trade_date": ["20240103"], "close": [11.0],
+        })
+
+    monkeypatch.setattr(cache.db, "read_df", increment)
+    cache.ensure_cache("daily")
+
+    assert "WHERE `trade_date` > %s" in seen["sql"]
+    assert seen["params"] == ("20240102",)
+    df = pd.read_parquet(cache.cache_path("daily"))
+    assert list(df["trade_date"]) == ["20240102", "20240103"]
+
+
 def test_ensure_cache_replaces_non_date_table_snapshot(monkeypatch):
     monkeypatch.setattr(cache.ingest, "get_watermark", lambda t: "20240105")
     first = pd.DataFrame({

@@ -30,6 +30,11 @@ class FakeCursor:
     def fetchall(self):
         return self._rows
 
+    def fetchmany(self, size=None):
+        if size is None:
+            return list(self._rows)
+        return list(self._rows[:size])
+
     def __enter__(self):
         return self
 
@@ -109,6 +114,30 @@ def test_run_readonly_closes_connection_when_rollback_fails(monkeypatch):
     frame = runner.run_readonly("SELECT ts_code FROM daily LIMIT 1")
 
     assert list(frame.columns) == ["ts_code"]
+    assert fake.closed is True
+
+
+def test_run_readonly_allows_exactly_max_rows(monkeypatch):
+    rows = [{"n": index} for index in range(runner.sql_guard.MAX_ROWS)]
+    fake = FakeConnection(rows)
+    monkeypatch.setattr(runner.pymysql, "connect", lambda **kwargs: fake)
+
+    frame = runner.run_readonly("SELECT n FROM daily LIMIT 200")
+
+    assert len(frame) == runner.sql_guard.MAX_ROWS
+    assert fake.rolled_back is True
+    assert fake.closed is True
+
+
+def test_run_readonly_rejects_more_than_max_rows(monkeypatch):
+    rows = [{"n": index} for index in range(runner.sql_guard.MAX_ROWS + 1)]
+    fake = FakeConnection(rows)
+    monkeypatch.setattr(runner.pymysql, "connect", lambda **kwargs: fake)
+
+    with pytest.raises(RuntimeError, match="查询返回超过 200 行，已中止"):
+        runner.run_readonly("SELECT n FROM daily LIMIT 201")
+
+    assert fake.rolled_back is True
     assert fake.closed is True
 
 

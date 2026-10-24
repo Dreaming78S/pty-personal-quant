@@ -66,20 +66,31 @@ def _write_cache(table: str, df: pd.DataFrame, watermark: str | None) -> Path:
 
 
 def ensure_cache(table: str) -> Path:
-    """比对 MySQL 水位线，必要时拉取增量并重写本地镜像。"""
+    """比对 MySQL 水位线，必要时拉取增量并重写本地镜像。
+
+    缓存水位线比数据库新（例如切换到较旧快照或回滚数据库）、缓存水位线
+    缺失或数据库水位线缺失时整表重读，丢弃本地不可信数据；否则增量查询
+    为空会把数据库中不存在的日期一直留在镜像里，且水位线回写后将永远
+    命中 no-op 分支。
+    """
     watermark = ingest.get_watermark(table)
     path = cache_path(table)
     meta = _read_meta(table)
-    if path.exists() and watermark is not None and meta.get("watermark") == watermark:
+    cached = meta.get("watermark")
+    if path.exists() and watermark is not None and cached == watermark:
         return path
 
-    existing = _coerce_decimals(
-        pd.read_parquet(path) if path.exists() else pd.DataFrame())
     date_col = schemas.date_column(table)
-    if path.exists() and date_col and meta.get("watermark"):
+    # 缓存水位线缺失、数据库水位线缺失或缓存比数据库新时，增量都不可信，
+    # 必须整表重读；否则会保留数据库里已不存在的日期，或把旧快照重复拼接。
+    reload_all = path.exists() and (
+        cached is None or watermark is None or cached > watermark)
+    existing = (pd.DataFrame() if reload_all else _coerce_decimals(
+        pd.read_parquet(path) if path.exists() else pd.DataFrame()))
+    if path.exists() and date_col and cached and not reload_all:
         delta = db.read_df(
             f"SELECT * FROM `{table}` WHERE `{date_col}` > %s ORDER BY `{date_col}`",
-            (meta["watermark"],),
+            (cached,),
         )
     else:
         delta = db.read_df(f"SELECT * FROM `{table}`")

@@ -40,7 +40,9 @@ class FeishuMessage(NamedTuple):
 
 def resolve_strategies(strategy: str) -> list[str]:
     if strategy.strip().lower() in ("", "all"):
-        return sorted(list_strategies())
+        # 与 HIT_STRATEGIES / data status / recommend 的展示顺序保持一致；
+        # README 中“HIT_STRATEGIES 顺序影响 -s all”依赖这里。
+        return list(schemas.HIT_STRATEGIES)
     names = [part.strip() for part in strategy.split(",") if part.strip()]
     known = list_strategies()
     unknown = [name for name in names if name not in known]
@@ -217,7 +219,10 @@ def build_messages(strategy: str = "all", date: str | None = None,
         messages[name] = format_message(name, target, rows)
     if include_co:
         messages[CO_MESSAGE_KEY] = build_co_message(target)
-        messages[COMBINED_MESSAGE_KEY] = build_combined_message(target)
+        # 复合共振是“当日 rise + 近5日其他策略”的全市场卡片，只在 -s all
+        # 模式下附带；单策略模式只保留该策略卡 + 多策略共振卡。
+        if strategy.strip().lower() in ("", "all"):
+            messages[COMBINED_MESSAGE_KEY] = build_combined_message(target)
     return messages
 
 

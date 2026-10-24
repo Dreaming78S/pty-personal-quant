@@ -17,8 +17,6 @@ SYSTEM_SCHEMAS = frozenset({
     "information_schema", "mysql", "performance_schema", "sys",
 })
 
-_COMMENT_BLOCK = re.compile(r"/\*.*?\*/", re.S)
-_COMMENT_LINE = re.compile(r"--[^\n]*")
 _SELECT_START = re.compile(r"(?is)^(select|with)\b")
 _BANNED = re.compile(r"\b(?:" + "|".join(BANNED_KEYWORDS) + r")\b", re.I)
 _LIMIT_COMMA = re.compile(r"(?is)\blimit\s+(\d+)\s*,\s*(\d+)\s*$")
@@ -65,8 +63,65 @@ class SqlRejected(ValueError):
     """SQL 未通过只读校验。"""
 
 
+def _scan_quoted(sql: str, start: int) -> int:
+    """从引号（'、"、`）开始扫描，返回闭合引号之后的位置；未闭合返回末尾。"""
+    quote = sql[start]
+    index = start + 1
+    length = len(sql)
+    while index < length:
+        char = sql[index]
+        if char == "\\" and quote != "`":
+            index += 2
+            continue
+        if char == quote:
+            # '' / "" / `` 是 SQL 中转义的同一个引号字符
+            if index + 1 < length and sql[index + 1] == quote:
+                index += 2
+                continue
+            return index + 1
+        index += 1
+    return length
+
+
+def _skip_line_comment(sql: str, start: int) -> int:
+    """跳过从 start 起到行尾的注释，返回换行符位置（不消耗换行符）。"""
+    newline = sql.find("\n", start)
+    return len(sql) if newline == -1 else newline
+
+
 def _strip_comments(sql: str) -> str:
-    return _COMMENT_LINE.sub(" ", _COMMENT_BLOCK.sub(" ", sql))
+    """剥离 `#`、`--`、`/* ... */` 注释，保留字符串/反引号字面量与换行。
+
+    注释可能出现在字符串或反引号里（例如 ``'a#b'``、``'a--b'``），
+    必须按字面量整体保留，否则会误删查询内容。换行符保留，避免把注释
+    两侧的语句粘连在一起。
+    """
+    out: list[str] = []
+    index = 0
+    length = len(sql)
+    while index < length:
+        char = sql[index]
+        if char in ("'", '"', "`"):
+            end = _scan_quoted(sql, index)
+            out.append(sql[index:end])
+            index = end
+            continue
+        if char == "#":
+            index = _skip_line_comment(sql, index)
+            continue
+        if sql.startswith("--", index):
+            index = _skip_line_comment(sql, index)
+            continue
+        if sql.startswith("/*", index):
+            end = sql.find("*/", index + 2)
+            comment = sql[index:] if end == -1 else sql[index:end + 2]
+            # 保留块注释内部的换行；没有换行时补一个空格，避免把两侧 token 粘连
+            out.append("\n" * comment.count("\n") or " ")
+            index = length if end == -1 else end + 2
+            continue
+        out.append(char)
+        index += 1
+    return "".join(out)
 
 
 def _tokenize(body: str) -> list[tuple[str, str, int]]:

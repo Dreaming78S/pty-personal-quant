@@ -81,6 +81,18 @@ def test_build_market_adjusts_and_flags():
     assert new.iloc[0]["is_new"]  # 上市第 1 个交易日
 
 
+def test_build_market_drops_codes_missing_from_stock_basic():
+    frames = list(_frames())
+    daily = frames[0]
+    alias = daily[daily["ts_code"] == "600000.SH"].copy()
+    alias["ts_code"] = "000099.SZ"
+    frames[0] = pd.concat([daily, alias], ignore_index=True)
+
+    market = loader.build_market(*frames, UniverseFilters(min_list_days=0))
+
+    assert "000099.SZ" not in set(market["ts_code"])
+
+
 def test_apply_universe_filters():
     frames = _frames()
     market = loader.build_market(*frames, UniverseFilters(min_list_days=0))

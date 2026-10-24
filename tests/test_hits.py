@@ -239,3 +239,7 @@ def test_fill_hits_rejects_unknown_strategy(monkeypatch):
         assert "nope" in str(exc)
     else:
         raise AssertionError("未注册策略应报错")
+
+
+def test_resolve_all_uses_hit_strategy_order():
+    assert hits._resolve_strategies("all") == list(schemas.HIT_STRATEGIES)

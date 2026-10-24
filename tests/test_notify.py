@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 
+from quant.data import schemas
 from quant.engine import notify, recommend
 
 _CFG = recommend.RecommendConfig()
@@ -389,6 +390,23 @@ def test_build_messages_can_skip_co_message(monkeypatch):
     messages = notify.build_messages("all", "20260918", include_co=False)
 
     assert set(messages) == {"ma_volume"}
+
+
+def test_build_messages_single_strategy_skips_combined_card(monkeypatch):
+    _patch_empty_sources(monkeypatch)
+    monkeypatch.setattr(notify, "build_co_message",
+                        lambda date: notify.FeishuMessage(
+                            "【多策略共振】2026-09-18", ("今日无共振",), False))
+    monkeypatch.setattr(notify, "build_combined_message",
+                        lambda date: pytest.fail("单策略模式不应组装复合共振卡片"))
+
+    messages = notify.build_messages("ma_volume", "20260918")
+
+    assert list(messages) == ["ma_volume", "多策略共振"]
+
+
+def test_resolve_strategies_all_uses_hit_strategy_order():
+    assert notify.resolve_strategies("all") == list(schemas.HIT_STRATEGIES)
 
 
 def test_build_messages_rejects_stale_watermark(monkeypatch):
