@@ -36,8 +36,8 @@ uv run quant notify          # 5. 飞书推送默认两张卡（可选）
 ```
 
 - 更新与推送彼此独立：`notify -s ...` 只读命中表；默认模式的“今日最终推荐”还会读取本地 `index_daily` 缓存（不会自动刷新），请确保缓存已到目标日期。推送已入库的历史日期用 `-d`，无需先跑数据更新；推送前可用 `--dry-run` 预览
-- 本地 `scripts/daily_update.py` 一键执行盘后流程（`--skip-notify` 可只更新不推送；非交易日自动跳过推送；`scripts/` 未纳入版本管理）
-- 定时任务（Windows 任务计划程序）：任务名 `MyAStockQuant_DailyUpdate`，每周一至周五 **17:30** 运行 `scripts/daily_update_task.cmd`（内部调用 `daily_update.py`，日志追加到 `logs/daily_update.log`）；任务为交互式运行（需处于登录状态），某步失败会返回非零退出码且不推送，稍后手动重跑即可
+- 本地 `tmp_scripts/daily_update.py` 一键执行盘后流程（`--skip-notify` 可只更新不推送；非交易日自动跳过推送；`tmp_scripts/` 未纳入版本管理）
+- 定时任务（Windows 任务计划程序）：任务名 `MyAStockQuant_DailyUpdate`，每周一至周五 **17:30** 运行 `tmp_scripts/daily_update_task.cmd`（内部调用 `daily_update.py`，日志追加到 `logs/daily_update.log`）；任务为交互式运行（需处于登录状态），某步失败会返回非零退出码且不推送，稍后手动重跑即可
 
   ```powershell
   schtasks /Change /TN "MyAStockQuant_DailyUpdate" /ST 18:00    # 调整执行时间
@@ -103,16 +103,16 @@ uv run quant data update -t daily_basic --from-date 2020-01-01       # 补 limit
 长时间增量更新后若出现数据空洞，或接口/字段变更需要彻底重刷，可在夜间（非交易时段）执行：
 
 ```bash
-uv run python scripts/rebuild_data.py --yes              # 无值守执行，约 2 小时
-uv run python scripts/rebuild_data.py                    # 列出待清空表并输入 YES 确认
-uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，从水位线续跑补齐
+uv run python tmp_scripts/rebuild_data.py --yes              # 无值守执行，约 2 小时
+uv run python tmp_scripts/rebuild_data.py                    # 列出待清空表并输入 YES 确认
+uv run python tmp_scripts/rebuild_data.py --skip-truncate    # 中断后不清空，从水位线续跑补齐
 ```
 
 - 默认清空 `schemas.TABLES` 全部系统表的数据（含 `ingest_log` 水位线）后全量重拉，行情/交易类数据从 2018-01-01 起（`--market-start` 可调）
 - 日期参数、`--rate` 与 Tushare 客户端在清空之前校验/构造，参数写错不会清库
 - 不传 `--yes` 时会列出将被清空的表并要求输入 `YES` 确认；`--all-tables` 会清空当前库全部基础表（含非本系统表），请谨慎使用
 - `--skip-truncate` 不清空，按 `ingest_log` 水位线只补未入库的日期（没有水位线的表从起始日期拉取），快照表仍整体刷新，可安全重跑续传
-- 脚本入口位于本地 `scripts/` 目录（未纳入版本管理）；重建编排逻辑在 `src/quant/maintenance.py`，便于测试与复用
+- 脚本入口位于本地 `tmp_scripts/` 目录（未纳入版本管理）；重建编排逻辑在 `src/quant/maintenance.py`，便于测试与复用
 - 预计耗时约 2 小时（行情约 1.2 万次调用、150 次/分钟；股东增减持按自然日抓取、90 次/分钟）
 - 全量数据需预留数 GB MySQL 存储空间，请确认实例容量后再执行
 
@@ -175,9 +175,9 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 
 1. 策略文件改名：`src/quant/strategies/<名称>.py` → `_<名称>.py`（下划线开头会被自动发现跳过，策略即从 `quant list`、`hits update -s all` 中消失）
 2. 测试文件同步改名：`tests/test_strategy_<名称>.py` → `_test_strategy_<名称>.py`（pytest 不收集下划线开头的文件，避免因策略未注册而失败）
-3. `src/quant/data/schemas.py` 的 `HIT_STRATEGIES` 移除该名；`tests/test_schemas.py` 元组断言同步——共振报告、通用回测、本地 `scripts/daily_update.py` 随即不再包含该策略
+3. `src/quant/data/schemas.py` 的 `HIT_STRATEGIES` 移除该名；`tests/test_schemas.py` 元组断言同步——共振报告、通用回测、本地 `tmp_scripts/daily_update.py` 随即不再包含该策略
 4. 以下内容都不要动：`configs/strategies/<名称>.yaml`、数据库表 `hit_<名称>`、`ingest_log` 中 `hit_<名称>` 的水位线
-5. 验证：`uv run quant list` 不再出现、`uv run pytest -q` 通过；本地 `scripts/daily_update.py` 不会把该表误报为"未追平"
+5. 验证：`uv run quant list` 不再出现、`uv run pytest -q` 通过；本地 `tmp_scripts/daily_update.py` 不会把该表误报为"未追平"
 6. 恢复启用：文件改回原名、名字加回 `HIT_STRATEGIES`（测试同步），然后从旧水位线自动补齐禁用期间缺失的数据：
 
    ```bash
@@ -213,8 +213,8 @@ uv run python scripts/rebuild_data.py --skip-truncate    # 中断后不清空，
 
 - `outputs/select/<日期>_<策略>.csv`：`quant select` 选股结果
 - `outputs/backtest/<策略>_<时间戳>/`：回测权益 `equity.csv`、成交 `trades.csv`、指标 `metrics.json` 与净值图 `equity.png`
-- `outputs/reports/`：命中表现、共振拆分、通用命中回测等报告与明细（由本地 `scripts/` 下脚本生成）
-- 本地 Parquet 缓存 `data_cache/`、日志 `logs/`；`outputs/`、`data_cache/`、`logs/`、`scripts/` 均已 gitignore
+- `outputs/reports/`：命中表现、共振拆分、通用命中回测等报告与明细（由本地 `tmp_scripts/` 下脚本生成）
+- 本地 Parquet 缓存 `data_cache/`、日志 `logs/`；`outputs/`、`data_cache/`、`logs/`、`tmp_scripts/` 均已 gitignore
 
 ## 测试
 
