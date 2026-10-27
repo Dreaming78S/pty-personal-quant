@@ -357,8 +357,72 @@ HIT_TABLES: dict[str, TableSpec] = {
     for strategy in HIT_STRATEGIES
 }
 
+
+LIMIT_COLUMNS: tuple[str, ...] = (
+    "ts_code", "trade_date", "name", "industry",
+    "raw_open", "raw_high", "raw_low", "raw_close", "raw_pre_close",
+    "pct_chg", "limit_price", "amount", "vol", "turnover_rate",
+    "circ_mv", "total_mv", "is_one_word", "streak",
+)
+
+LIMIT_DIRECTIONS: tuple[tuple[str, str], ...] = (
+    ("limit_up_daily", "up"),
+    ("limit_down_daily", "down"),
+)
+
+
+def _limit_ddl(table: str, direction: str) -> str:
+    if direction not in ("up", "down"):
+        raise ValueError(f"未知涨跌停方向：{direction}")
+    up = direction == "up"
+    limit_comment = "涨停价" if up else "跌停价"
+    one_word_comment = ("是否一字涨停(开盘至收盘全天封死)" if up
+                        else "是否一字跌停(开盘至收盘全天封死)")
+    streak_comment = ("连续涨停交易日数(含当日)" if up
+                      else "连续跌停交易日数(含当日)")
+    table_comment = (f"主板{'涨停' if up else '跌停'}股"
+                     "(收盘封板，非ST，上市满60个交易日)")
+    return f"""
+CREATE TABLE IF NOT EXISTS `{table}` (
+  ts_code VARCHAR(12) NOT NULL COMMENT 'TS代码',
+  trade_date CHAR(8) NOT NULL COMMENT '交易日期',
+  name VARCHAR(32) COMMENT '股票名称(回填时快照)',
+  industry VARCHAR(32) COMMENT '所属行业(回填时快照)',
+  raw_open DECIMAL(12,4) COMMENT '不复权开盘价',
+  raw_high DECIMAL(12,4) COMMENT '不复权最高价',
+  raw_low DECIMAL(12,4) COMMENT '不复权最低价',
+  raw_close DECIMAL(12,4) NOT NULL COMMENT '不复权收盘价',
+  raw_pre_close DECIMAL(12,4) COMMENT '交易所除权后昨收价',
+  pct_chg DECIMAL(10,4) COMMENT '涨跌幅%',
+  limit_price DECIMAL(12,4) NOT NULL COMMENT '{limit_comment}',
+  amount DECIMAL(20,4) COMMENT '成交额(千元)',
+  vol DECIMAL(20,2) COMMENT '成交量(手)',
+  turnover_rate DECIMAL(16,6) COMMENT '换手率%',
+  circ_mv DECIMAL(20,4) COMMENT '流通市值(万元)',
+  total_mv DECIMAL(20,4) COMMENT '总市值(万元)',
+  is_one_word TINYINT NOT NULL DEFAULT 0 COMMENT '{one_word_comment}',
+  streak INT NOT NULL DEFAULT 1 COMMENT '{streak_comment}',
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT '首次入库时间',
+  updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (ts_code, trade_date),
+  KEY idx_trade_date (trade_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='{table_comment}'
+"""
+
+
+# 由行情推导的派生表：不参与 Tushare 抓取、Parquet 缓存镜像与夜间重建清空。
+LIMIT_TABLES: dict[str, TableSpec] = {
+    table: TableSpec(
+        name=table,
+        columns=LIMIT_COLUMNS,
+        ddl=_limit_ddl(table, direction),
+        date_column="trade_date",
+    )
+    for table, direction in LIMIT_DIRECTIONS
+}
+
 # 历史遗留存档表（原 Web 平台，已无读写代码路径，仅 init-db 创建以保留存量数据）。
-# 独立于 TABLES/HIT_TABLES，不参与 Tushare 抓取、Parquet 缓存镜像、bot 查询白名单与 data status。
+# 独立于 TABLES/HIT_TABLES/LIMIT_TABLES，不参与 Tushare 抓取、Parquet 缓存镜像、bot 查询白名单与 data status。
 APP_TABLES: dict[str, TableSpec] = {
     "strategy_definitions": TableSpec(
         name="strategy_definitions",
@@ -450,6 +514,8 @@ def create_app_tables() -> list[str]:
 def columns_of(table: str) -> list[str]:
     if table in HIT_TABLES:
         return list(HIT_TABLES[table].columns)
+    if table in LIMIT_TABLES:
+        return list(LIMIT_TABLES[table].columns)
     if table in APP_TABLES:
         return list(APP_TABLES[table].columns)
     return list(TABLES[table].columns)
@@ -461,7 +527,15 @@ def create_hit_tables() -> list[str]:
     return list(HIT_TABLES)
 
 
+def create_limit_tables() -> list[str]:
+    for spec in LIMIT_TABLES.values():
+        db.execute(spec.ddl)
+    return list(LIMIT_TABLES)
+
+
 def date_column(table: str) -> str | None:
+    if table in LIMIT_TABLES:
+        return LIMIT_TABLES[table].date_column
     if table in APP_TABLES:
         return APP_TABLES[table].date_column
     return TABLES[table].date_column

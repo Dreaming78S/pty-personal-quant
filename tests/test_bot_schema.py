@@ -5,10 +5,13 @@ from quant.data import schemas
 def test_allowed_tables_covers_all_schema_tables():
     names = schema.allowed_tables()
 
-    assert names == sorted({*schemas.TABLES, *schemas.HIT_TABLES})
+    assert names == sorted({*schemas.TABLES, *schemas.HIT_TABLES,
+                            *schemas.LIMIT_TABLES})
     assert "ingest_log" in names
     assert "hit_rise_shrink_pullback" in names
-    assert len(names) == 20
+    assert "limit_up_daily" in names
+    assert "limit_down_daily" in names
+    assert len(names) == 22
 
 
 def test_schema_prompt_contains_every_table_and_columns():

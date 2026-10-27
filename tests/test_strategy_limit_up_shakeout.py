@@ -3,8 +3,10 @@ import pandas as pd
 from quant.strategies import get_strategy
 
 
-def make_bars(raw_close, open_, close, low, vols):
+def make_bars(raw_close, open_, close, low, vols, raw_pre_close=None):
     n = len(close)
+    if raw_pre_close is None:
+        raw_pre_close = [float("nan")] + list(raw_close[:-1])
     return pd.DataFrame({
         "trade_date": [f"202401{i + 1:02d}" for i in range(n)],
         "open": open_,
@@ -12,6 +14,7 @@ def make_bars(raw_close, open_, close, low, vols):
         "low": low,
         "close": close,
         "raw_close": raw_close,
+        "raw_pre_close": raw_pre_close,
         "vol": vols,
         "amount": [1e5] * n,
     })
@@ -26,6 +29,22 @@ def test_limit_up_shakeout_true_on_pullback():
     s = get_strategy("limit_up_shakeout")
 
     signals = s.generate_signals(make_bars(raw_close, open_, close, low, vols))
+
+    assert list(signals) == [False, False, True]
+
+
+def test_limit_up_shakeout_uses_ex_rights_adjusted_pre_close():
+    # 除权日：前一日原始收盘 10.5，除权后昨收 10.0；11.0 相对昨收是 +10% 涨停。
+    raw_close = [10.5, 11.0, 10.4]
+    raw_pre_close = [float("nan"), 10.0, 11.0]
+    close = [10.5, 11.0, 10.5]
+    open_ = [10.5, 10.8, 11.0]
+    low = [10.4, 10.9, 11.0]
+    vols = [100, 100, 300]
+    s = get_strategy("limit_up_shakeout")
+
+    signals = s.generate_signals(
+        make_bars(raw_close, open_, close, low, vols, raw_pre_close))
 
     assert list(signals) == [False, False, True]
 

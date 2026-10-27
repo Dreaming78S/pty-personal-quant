@@ -20,6 +20,7 @@ uv run quant select -s ma_volume -n 50           # 只输出前 50 只
 uv run quant select -s ma_volume --boards all    # 不限板块（main,gem,star,bse 可逗号组合）
 uv run quant backtest -s ma_volume --start 2021-01-01 --end 2026-10-23   # 示例区间；默认等权买入全部信号股
 uv run quant hits update -s all                  # 回填/增量写入 hit_<策略> 历史命中表
+uv run quant limit update                        # 回填/增量写入主板涨停、跌停股表
 uv run quant recommend                           # 显示当日最终推荐（七个指数闸门 + 分层，只读不推送）
 uv run quant notify                              # 飞书推送默认两张卡：今日最终推荐（列七指数） + 多策略共振
 uv run quant notify -s all --dry-run             # 只打印不发送，预览旧版全部策略卡（含共振、复合）
@@ -30,9 +31,10 @@ uv run quant notify -s all --dry-run             # 只打印不发送，预览�
 ```bash
 uv run quant data update     # 1. 行情增量入库（建议交易日 17:30 后执行）
 uv run quant hits update     # 2. 各策略命中表增量写入（可 -s 指定策略）
-uv run quant data status     # 3. 校验各 hit_<策略> 水位线已追平最新交易日
-uv run quant recommend       # 4. 输出当日最终推荐（可选，列七个指数状态）
-uv run quant notify          # 5. 飞书推送默认两张卡（可选）
+uv run quant limit update    # 3. 主板涨停、跌停股表增量写入
+uv run quant data status     # 4. 校验各 hit_<策略>、limit_*_daily 水位线已追平最新交易日
+uv run quant recommend       # 5. 输出当日最终推荐（可选，列七个指数状态）
+uv run quant notify          # 6. 飞书推送默认两张卡（可选）
 ```
 
 - 更新与推送彼此独立：`notify -s ...` 只读命中表；默认模式的“今日最终推荐”还会读取本地 `index_daily` 缓存（不会自动刷新），请确保缓存已到目标日期。推送已入库的历史日期用 `-d`，无需先跑数据更新；推送前可用 `--dry-run` 预览
@@ -56,7 +58,7 @@ uv run quant bot serve                                  # 启动长连接常驻�
 
 - 需要 `.env` 配置 `feishu_app_id`、`feishu_app_secret`、`deepseek_api_key`（可选 `deepseek_base_url`、`deepseek_model`）
 - 飞书开放平台需把事件订阅方式设为「长连接」、订阅 `im.message.receive_v1`，并开通 `im:message:send_as_bot`（回复）与私聊 `im:message` 权限；群聊**只**授 `im:message.group_at_msg:readonly`（仅接收 @机器人 的消息，避免机器人响应群里未 @ 的普通消息）后发布版本
-- 安全边界：只允许单条 `SELECT`/`WITH`、表白名单（`schemas` 中 20 张业务表：13 张源表含 `ingest_log` + 7 张 `hit_*`；不含 3 张遗留存档表）、`START TRANSACTION READ ONLY`、结果最多 200 行、查询超时 15 秒
+- 安全边界：只允许单条 `SELECT`/`WITH`、表白名单（`schemas` 中 22 张业务表：13 张源表含 `ingest_log` + 7 张 `hit_*` + 2 张 `limit_*_daily`；不含 3 张遗留存档表）、`START TRANSACTION READ ONLY`、结果最多 200 行、查询超时 15 秒
 
 ## 策略历史命中（hit_&lt;策略&gt;）
 
@@ -66,6 +68,16 @@ uv run quant bot serve                                  # 启动长连接常驻�
 - 字段：`industry`（行业快照）、`prev_hit`（同策略上一交易日是否命中）、`hit_3d/hit_5d/hit_10d`（同策略前 3/5/10 个交易日命中天数，不含当日、停牌日占窗口）、`streak`（同策略连续命中天数，含当日）
 - 历史列只统计**表内已记录的命中**（多数策略自 2024-01-02 起，`rise_shrink_pullback` 自 2026-01-05 起），每行都可用表自身复核；命中计算加载完整历史面板，结果与水位线、重跑次数无关（单日 `select` 对暖机期内长期停牌股可能略有差异）
 - 命中表是派生数据：不参与 Tushare 抓取、本地 Parquet 缓存与夜间全量重建清空；`quant data status` 可查看行数与水位线
+
+## 涨跌停股（limit_*_daily）
+
+- `uv run quant limit update` 从 `daily`、`stk_limit`、`daily_basic` 等本地数据推导两张表：
+  - `limit_up_daily`：主板收盘涨停股
+  - `limit_down_daily`：主板收盘跌停股
+- 统计口径：只统计收盘封住涨停/跌停；`ts_code` 以 `60` 或 `00` 开头（沪深主板）；按 `namechange` 排除当日 ST；上市不满 60 个交易日的新股；排除停牌。
+- 涨跌停判定用 `raw_close` 对比 `stk_limit` 的 `up_limit/down_limit`，不用涨幅阈值；`is_one_word` 标记一字板，`streak` 为连续涨停/跌停交易日数（停牌或断板后重新从 1 开始）。
+- 默认从 2018-01-01 回填，水位线存 `ingest_log`，可增量续跑、幂等重跑；显式传 `--from-date` 视为重算：先清空该区间旧行再重新计算。
+- 两张表是派生数据：不参与 Tushare 抓取、本地 Parquet 缓存与夜间全量重建清空；`quant data status` 可查看行数与水位线。Tushare `limit_list_d` 的 `first_time/last_time/open_times` 等盘中字段无法从日线推导，当前表不包含。
 
 ## 飞书通知
 
@@ -83,7 +95,8 @@ uv run quant bot serve                                  # 启动长连接常驻�
 - 行情：`daily`（日线）、`adj_factor`（复权因子）、`daily_basic`（每日指标，含 `limit_status` 涨跌停状态）、`suspend_d`（停牌）、`stk_limit`（涨跌停价）、`index_daily`（指数日线，覆盖沪深300、上证指数、深证成指、创业板指、中证500、中证1000、科创50、北证50 共 8 个宽基指数，按指数逐只区间抓取；推荐闸门默认使用其中 7 个，不含北证50）
 - 参考：`stock_basic`（股票基础信息）、`trade_cal`（交易日历）、`namechange`（名称变更）
 - 新增：`stock_company`（上市公司基本信息）、`new_share`（IPO 新股列表）、`stk_holdertrade`（股东增减持，按公告日逐自然日抓取）
-- 历史遗留（原 Web 平台，已无读写代码）：`strategy_definitions`（自定义策略定义与版本）、`backtest_runs`（回测运行记录）、`backtest_trades`（回测交易明细），`data init-db` 仍会创建以保留库内存量数据（共 23 张：13 张源表含 `ingest_log` + 7 张 `hit_*` + 3 张遗留）
+- 派生：`limit_up_daily`（主板收盘涨停股）、`limit_down_daily`（主板收盘跌停股），由 `quant limit update` 从行情推导
+- 历史遗留（原 Web 平台，已无读写代码）：`strategy_definitions`（自定义策略定义与版本）、`backtest_runs`（回测运行记录）、`backtest_trades`（回测交易明细），`data init-db` 仍会创建以保留库内存量数据（共 25 张：13 张源表含 `ingest_log` + 7 张 `hit_*` + 2 张 `limit_*_daily` + 3 张遗留）
 - `loader` 以 `stock_basic` 的 `ts_code` 为准过滤行情；Tushare 代码变更留下的旧代码别名（如 `000022.SZ`、`000043.SZ`、`300114.SZ`）不会进入行情面板
 
 ### 升级/补数据
@@ -115,6 +128,7 @@ uv run python tmp_scripts/rebuild_data.py --skip-truncate    # 中断后不清�
 - 脚本入口位于本地 `tmp_scripts/` 目录（未纳入版本管理）；重建编排逻辑在 `src/quant/maintenance.py`，便于测试与复用
 - 预计耗时约 2 小时（行情约 1.2 万次调用、150 次/分钟；股东增减持按自然日抓取、90 次/分钟）
 - 全量数据需预留数 GB MySQL 存储空间，请确认实例容量后再执行
+- 重建不会清空 `hit_*`、`limit_*_daily` 等派生表；源数据重拉后需按需重算：`uv run quant hits update -s all --from-date 2024-01-01`、`uv run quant limit update --from-date 2018-01-01`
 
 ## 策略参数
 

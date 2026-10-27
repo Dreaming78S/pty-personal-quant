@@ -449,6 +449,44 @@ def test_create_hit_tables_executes_all_ddls(monkeypatch):
     assert all("CREATE TABLE IF NOT EXISTS" in sql for sql in calls)
 
 
+def test_limit_tables_cover_up_and_down():
+    assert schemas.LIMIT_DIRECTIONS == (
+        ("limit_up_daily", "up"),
+        ("limit_down_daily", "down"),
+    )
+    assert set(schemas.LIMIT_TABLES) == {"limit_up_daily", "limit_down_daily"}
+    assert set(schemas.TABLES) & set(schemas.LIMIT_TABLES) == set()
+    assert set(schemas.HIT_TABLES) & set(schemas.LIMIT_TABLES) == set()
+
+
+def test_limit_table_columns_and_ddl_shape():
+    spec = schemas.LIMIT_TABLES["limit_up_daily"]
+    assert spec.columns == schemas.LIMIT_COLUMNS
+    assert schemas.columns_of("limit_up_daily") == list(schemas.LIMIT_COLUMNS)
+    assert schemas.date_column("limit_up_daily") == "trade_date"
+    assert "PRIMARY KEY (ts_code, trade_date)" in spec.ddl
+    assert "KEY idx_trade_date (trade_date)" in spec.ddl
+    assert "limit_price DECIMAL(12,4) NOT NULL COMMENT '涨停价'" in spec.ddl
+    assert "is_one_word TINYINT" in spec.ddl
+    assert "streak INT" in spec.ddl
+    assert "ENGINE=InnoDB DEFAULT CHARSET=utf8mb4" in spec.ddl
+    assert "主板涨停股" in spec.ddl
+
+    down = schemas.LIMIT_TABLES["limit_down_daily"]
+    assert "limit_price DECIMAL(12,4) NOT NULL COMMENT '跌停价'" in down.ddl
+    assert "主板跌停股" in down.ddl
+
+
+def test_create_limit_tables_executes_all_ddls(monkeypatch):
+    calls = []
+    monkeypatch.setattr(schemas.db, "execute",
+                        lambda sql, params=None: calls.append(sql))
+    names = schemas.create_limit_tables()
+    assert set(names) == set(schemas.LIMIT_TABLES)
+    assert len(calls) == len(schemas.LIMIT_TABLES)
+    assert all("CREATE TABLE IF NOT EXISTS" in sql for sql in calls)
+
+
 def test_migrate_applies_add_then_widen_in_order(monkeypatch):
     executed = []
 

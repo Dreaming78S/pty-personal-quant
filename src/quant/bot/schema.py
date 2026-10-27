@@ -7,11 +7,13 @@ from quant.data import schemas
 
 def allowed_tables() -> list[str]:
     """机器人可查询的表白名单（随 schemas 自动同步）。"""
-    return sorted({*schemas.TABLES, *schemas.HIT_TABLES})
+    return sorted({*schemas.TABLES, *schemas.HIT_TABLES,
+                   *schemas.LIMIT_TABLES})
 
 
 def _ddl_of(table: str) -> str:
-    spec = schemas.TABLES.get(table) or schemas.HIT_TABLES[table]
+    spec = (schemas.TABLES.get(table) or schemas.HIT_TABLES.get(table)
+            or schemas.LIMIT_TABLES[table])
     return spec.ddl.strip()
 
 

@@ -27,7 +27,9 @@ class LimitUpShakeout(Strategy):
         close, open_ = bars["close"], bars["open"]
         vol = bars["vol"]
 
-        limit_up = raw_close.shift(1) >= raw_close.shift(2) * (1.0 + p.limit_pct)
+        # 对比交易所除权后的昨收，避免除权日漏掉或误判涨停。
+        limit_up = (raw_close.shift(1)
+                    >= bars["raw_pre_close"].shift(1) * (1.0 + p.limit_pct))
         bearish = close < open_
         heavy = vol > p.vol_ratio * vol.shift(1)
         support = bars["low"] >= close.shift(1)

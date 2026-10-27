@@ -5,9 +5,11 @@ import typer
 app = typer.Typer(help="A股量化选股与回测系统", no_args_is_help=True)
 data_app = typer.Typer(help="数据管理", no_args_is_help=True)
 hits_app = typer.Typer(help="策略历史命中", no_args_is_help=True)
+limit_app = typer.Typer(help="涨跌停股", no_args_is_help=True)
 bot_app = typer.Typer(help="飞书问数机器人", no_args_is_help=True)
 app.add_typer(data_app, name="data")
 app.add_typer(hits_app, name="hits")
+app.add_typer(limit_app, name="limit")
 app.add_typer(bot_app, name="bot")
 
 
@@ -38,11 +40,11 @@ def _chdir_to_project_root() -> None:
 
 @data_app.command("init-db")
 def data_init_db() -> None:
-    """在 MySQL 中创建全部数据表（含 hit_<策略> 与历史遗留存档表）并补齐已有表的缺失列（幂等）。"""
+    """在 MySQL 中创建全部数据表（含 hit_<策略>、涨跌停派生表与历史遗留存档表）并补齐已有表的缺失列（幂等）。"""
     from quant.data import schemas
 
     names = (schemas.create_all() + schemas.create_hit_tables()
-             + schemas.create_app_tables())
+             + schemas.create_limit_tables() + schemas.create_app_tables())
     typer.echo(f"已创建/确认 {len(names)} 张表：{', '.join(names)}")
     migrated = schemas.migrate() + schemas.migrate_hit_columns()
     if migrated:
@@ -85,8 +87,9 @@ def data_status() -> None:
         raise typer.Exit(code=1)
 
     rows = []
-    for name in [*schemas.TABLES, *schemas.HIT_TABLES]:
-        is_hit = name in schemas.HIT_TABLES
+    for name in [*schemas.TABLES, *schemas.HIT_TABLES, *schemas.LIMIT_TABLES]:
+        is_derived = (name in schemas.HIT_TABLES
+                      or name in schemas.LIMIT_TABLES)
         task = name
         try:
             count = db.scalar(f"SELECT COUNT(*) FROM `{name}`")
@@ -105,7 +108,7 @@ def data_status() -> None:
             "表": name,
             "行数": count,
             "水位线": watermark,
-            "缓存": "-" if is_hit else ("有" if cache.cache_path(name).exists() else "无"),
+            "缓存": "-" if is_derived else ("有" if cache.cache_path(name).exists() else "无"),
         })
     typer.echo(pd.DataFrame(rows).to_string(index=False))
 
@@ -131,6 +134,26 @@ def hits_update(
     )
     for name, rows in results.items():
         typer.echo(f"hit_{name}: 已写入 {rows} 行")
+
+
+@limit_app.command("update")
+def limit_update(
+    from_date: str = typer.Option(None, "--from-date",
+                                  help="起始日期（指定时先清空区间再重算），缺省从水位线或 2018-01-01 续跑"),
+    to_date: str = typer.Option(None, "--to-date", help="结束日期，缺省最新交易日"),
+) -> None:
+    """回填/增量写入主板涨停、跌停股表 limit_up_daily、limit_down_daily。"""
+    from quant.engine import limits
+    from quant.utils.dates import to_yyyymmdd
+    from quant.utils.logging import setup_logging
+
+    setup_logging()
+    results = limits.fill_limits(
+        from_date=to_yyyymmdd(from_date) if from_date else None,
+        to_date=to_yyyymmdd(to_date) if to_date else None,
+    )
+    for name, rows in results.items():
+        typer.echo(f"{name}: 已写入 {rows} 行")
 
 
 @app.command("notify")

@@ -5,12 +5,15 @@ from quant.strategies import get_strategy
 PARAMS = dict(ma_short=3, ma_long=5, limit_pct=0.095, vol_ma=3, vol_ratio=2.0)
 
 
-def make_bars(closes, raw_closes, vols):
+def make_bars(closes, raw_closes, vols, raw_pre_closes=None):
     n = len(closes)
+    if raw_pre_closes is None:
+        raw_pre_closes = [float("nan")] + list(raw_closes[:-1])
     return pd.DataFrame({
         "trade_date": [f"202401{i + 1:02d}" for i in range(n)],
         "open": closes, "high": closes, "low": closes, "close": closes,
         "raw_close": raw_closes,
+        "raw_pre_close": raw_pre_closes,
         "vol": vols,
         "amount": [c * v for c, v in zip(closes, vols)],
     })
@@ -50,6 +53,35 @@ def test_uptrend_limit_down_limit_check_uses_raw_close():
     vols = [100, 100, 100, 100, 100, 500]
     s = get_strategy("uptrend_limit_down", **PARAMS)
     signals = s.generate_signals(make_bars(closes, raw_closes, vols))
+    assert list(signals) == [False] * 5 + [True]
+
+
+def test_uptrend_limit_down_ignores_ex_rights_gap():
+    # 除权日原始价 11.0 -> 9.9 看似 -10%，但除权后昨收 10.8，实际仅 -8.3%。
+    closes = [10.0, 10.2, 10.4, 10.6, 11.0, 10.6]
+    raw_closes = [10.0, 10.2, 10.4, 10.6, 11.0, 9.9]
+    raw_pre_closes = [float("nan"), 10.0, 10.2, 10.4, 10.6, 10.8]
+    vols = [100, 100, 100, 100, 100, 500]
+    s = get_strategy("uptrend_limit_down", **PARAMS)
+
+    signals = s.generate_signals(
+        make_bars(closes, raw_closes, vols, raw_pre_closes))
+
+    assert not signals.any()
+
+
+def test_uptrend_limit_down_uses_ex_rights_adjusted_pre_close():
+    # 除权后昨收 10.0 高于前一日原始收盘 9.5；按原始收盘看仅 -5.3%，
+    # 按除权后昨收看是 -10%，应命中。
+    closes = [10.0, 10.2, 10.4, 10.6, 11.0, 10.6]
+    raw_closes = [9.5, 9.6, 9.7, 9.8, 9.5, 9.0]
+    raw_pre_closes = [float("nan"), 9.5, 9.6, 9.7, 9.8, 10.0]
+    vols = [100, 100, 100, 100, 100, 500]
+    s = get_strategy("uptrend_limit_down", **PARAMS)
+
+    signals = s.generate_signals(
+        make_bars(closes, raw_closes, vols, raw_pre_closes))
+
     assert list(signals) == [False] * 5 + [True]
 
 

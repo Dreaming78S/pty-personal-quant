@@ -35,7 +35,9 @@ class UptrendLimitDown(Strategy):
         # 均线数学相等（含浮点 1ulp 噪声）不算多头排列，避免面板长短导致信号闪烁
         diff_prev = (ma_short - ma_long).shift(1)
         uptrend = diff_prev > _EPS * ma_long.shift(1).abs()
-        limit_down = raw_close <= raw_close.shift(1) * (1.0 - p.limit_pct)
+        # 对比交易所除权后的昨收，避免除权缺口被误判为跌停。
+        limit_down = (raw_close
+                      <= bars["raw_pre_close"] * (1.0 - p.limit_pct))
         heavy = vol > p.vol_ratio * vol.rolling(p.vol_ma).mean()
 
         return (uptrend & limit_down & heavy).fillna(False)
