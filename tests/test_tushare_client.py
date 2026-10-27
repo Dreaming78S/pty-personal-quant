@@ -1,4 +1,5 @@
 import datetime
+import os
 
 import pandas as pd
 import pytest
@@ -67,6 +68,27 @@ def test_call_raises_after_max_retries(monkeypatch):
     client = TushareClient(token="t", pro=FailPro(), max_retries=2)
     with pytest.raises(RuntimeError, match="daily"):
         client.call("daily", trade_date="20240102")
+
+
+def test_call_bypasses_proxy_and_restores_environment(monkeypatch):
+    monkeypatch.setenv("NO_PROXY", "example.com")
+    monkeypatch.setenv("no_proxy", "example.com")
+    seen = {}
+
+    class FakePro:
+        def query(self, api, **kwargs):
+            seen["NO_PROXY"] = os.environ["NO_PROXY"]
+            seen["no_proxy"] = os.environ["no_proxy"]
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    client.call("daily", trade_date="20240102")
+
+    assert "example.com" in seen["NO_PROXY"]
+    assert "api.waditu.com" in seen["NO_PROXY"]
+    assert seen["NO_PROXY"] == seen["no_proxy"]
+    assert os.environ["NO_PROXY"] == "example.com"
+    assert os.environ["no_proxy"] == "example.com"
 
 
 def test_fetch_stock_basic_requests_exchange_status_matrix_and_dedupes():
@@ -279,16 +301,29 @@ def test_stock_basic_fields_match_schema_plus_cnspell():
     assert fields == set(schemas.columns_of("stock_basic")) | {"cnspell"}
 
 
-def test_fetch_stock_company_raises_when_an_exchange_frame_is_empty():
+def test_fetch_stock_company_keeps_other_exchanges_when_one_is_empty(caplog):
     class FakePro:
         def query(self, api, **kwargs):
             if kwargs["exchange"] == "SZSE":
                 return pd.DataFrame()
-            return pd.DataFrame({"ts_code": ["600000.SH"],
+            return pd.DataFrame({"ts_code": [f"600000.{kwargs['exchange']}"],
                                  "exchange": [kwargs["exchange"]]})
 
     client = TushareClient(token="t", pro=FakePro())
-    with pytest.raises(RuntimeError, match="SZSE"):
+    df = client.fetch_stock_company()
+
+    assert sorted(df["exchange"]) == ["BSE", "SSE"]
+    assert "SZSE" in caplog.text
+    assert "保留库中旧数据" in caplog.text
+
+
+def test_fetch_stock_company_raises_when_all_exchanges_are_empty():
+    class FakePro:
+        def query(self, api, **kwargs):
+            return pd.DataFrame()
+
+    client = TushareClient(token="t", pro=FakePro())
+    with pytest.raises(RuntimeError, match="所有交易所"):
         client.fetch_stock_company()
 
 

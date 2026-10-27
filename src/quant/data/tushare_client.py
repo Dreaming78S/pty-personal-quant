@@ -1,12 +1,45 @@
 from __future__ import annotations
 
 import datetime
+import logging
+import os
 import time
+from contextlib import contextmanager
 from typing import Any, Callable
 
 import pandas as pd
 
 from quant.config import get_settings
+
+logger = logging.getLogger(__name__)
+
+# Tushare 走直连：系统代理（如 Clash 的 127.0.0.1:10808）超时会导致
+# 整个行情更新中止。仅在 Tushare 调用期间临时设置 NO_PROXY。
+TUSHARE_DIRECT_HOSTS = ("api.waditu.com", "api.tushare.pro",
+                        "waditu.com", "tushare.pro")
+
+
+@contextmanager
+def _direct_network():
+    """Tushare 请求绕过系统代理，调用结束后恢复原环境变量。"""
+    keys = ("NO_PROXY", "no_proxy")
+    previous = {key: os.environ.get(key) for key in keys}
+    existing = previous["NO_PROXY"] or previous["no_proxy"] or ""
+    hosts = [part.strip() for part in existing.split(",") if part.strip()]
+    for host in TUSHARE_DIRECT_HOSTS:
+        if host not in hosts:
+            hosts.append(host)
+    value = ",".join(hosts)
+    for key in keys:
+        os.environ[key] = value
+    try:
+        yield
+    finally:
+        for key, old in previous.items():
+            if old is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = old
 
 STOCK_BASIC_FIELDS = ("ts_code,symbol,name,area,industry,market,exchange,"
                       "list_status,list_date,delist_date,is_hs,cnspell")
@@ -95,7 +128,8 @@ class TushareClient:
         for attempt in range(self._max_retries):
             self._limiter_for(api_name).acquire()
             try:
-                return self.pro.query(api_name, **kwargs)
+                with _direct_network():
+                    return self.pro.query(api_name, **kwargs)
             except Exception as exc:  # noqa: BLE001 - 需要重试所有接口异常
                 last_err = exc
                 time.sleep(2 ** attempt)
@@ -165,17 +199,27 @@ class TushareClient:
 
     def fetch_stock_company(self) -> pd.DataFrame:
         frames = []
+        empty_exchanges = []
         for exchange in ("SSE", "SZSE", "BSE"):
             frame = self.call("stock_company", exchange=exchange,
                               fields=STOCK_COMPANY_FIELDS)
             if frame.empty:
-                raise RuntimeError(
-                    f"stock_company {exchange} 返回空数据，疑似限流或接口异常；"
-                    "已中止，请稍后重跑")
+                empty_exchanges.append(exchange)
+                continue
             frames.append(frame)
+        if not frames:
+            raise RuntimeError(
+                "stock_company 所有交易所均返回空数据，疑似限流或接口异常；"
+                "已中止，请稍后重跑")
+        if empty_exchanges:
+            # 单交易所空数据不代表全表不可用：upsert 不会删除旧行，
+            # 保留库中该交易所的旧记录，避免拖垮后续行情更新与推送。
+            logger.warning(
+                "stock_company %s 返回空数据（疑似上游接口异常），"
+                "本次保留库中旧数据，继续刷新其余交易所",
+                "、".join(empty_exchanges))
         df = pd.concat(frames, ignore_index=True)
-        if not df.empty:
-            df = df.drop_duplicates(subset="ts_code", keep="last")
+        df = df.drop_duplicates(subset="ts_code", keep="last")
         return df.reset_index(drop=True)
 
     def fetch_new_share(self) -> pd.DataFrame:
