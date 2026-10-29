@@ -10,7 +10,7 @@ from quant.engine import loader, selection
 from quant.engine.loader import UniverseFilters
 from quant.strategies.base import get_strategy, list_strategies, load_strategy_config
 
-DEFAULT_START = "20240101"
+DEFAULT_START = "20180101"
 _WINDOWS = (3, 5, 10)
 DEFAULT_FILTERS = UniverseFilters(allowed_boards=("main",))
 STRATEGY_CONFIG_DIR = Path("configs/strategies")

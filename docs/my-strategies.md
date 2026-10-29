@@ -8,7 +8,7 @@
 - **价格口径**：形态、均线、动量等一律使用**后复权价**（`open/high/low/close`，等效分红再投资）；**涨停/跌停判定使用不复权真实价** `raw_close`，并与交易所除权后的昨收 `raw_pre_close` 比较（或直接使用 `up_limit/down_limit`）。不能拿前一日原始收盘价作基准，否则除权缺口会被误判为涨跌停。
 - **单位**：`amount` 为千元（Tushare 原始单位，策略内乘 1000 换算为元）；`circ_mv` 为万元；`vol` 为手。
 - **参数配置**：代码内为默认值，实际生效值取 `configs/strategies/<策略名>.yaml`；`params` 含义见各策略的参数表。
-- **修改参数后必须重算历史命中表**：`uv run quant hits update -s <策略名> --from-date 2024-01-01`（`rise_shrink_pullback` 例外：自 2026-01-01 起记录，重算用 `--from-date 2026-01-01`；详细流程见 README「策略变更标准操作流程」）。`quant select` 是实时计算，改完 yaml 立即生效、无需重算。
+- **修改参数后必须重算历史命中表**：`uv run quant hits update -s <策略名> --from-date 2018-01-01`（七张命中表统一从 2018 年开始统计；详细流程见 README「策略变更标准操作流程」）。`quant select` 是实时计算，改完 yaml 立即生效、无需重算。
 - **暖机（warmup_days）**：引擎为每只股票在信号日之前额外加载的交易日数；信号日 T 实际可用的 K 线数为 `暖机 + 1`（含 T 当日）。行数不足时窗口值为 NaN、该日不产生信号。
 - **排序分与 rank**：每日命中股票按 `score` 降序编号为 `rank`。`score` 由策略的排序口径决定（多数为成交额），仅影响输出顺序与限量（`-n`），不影响是否命中。
 
@@ -184,7 +184,7 @@
 ### 调参影响
 
 - `vol_ratio` 调大 → 只保留恐慌盘更重的错杀；`ma_long` 调大 → 趋势判定更长期。
-- 该策略命中数少而波动大，调参后建议先用 `quant hits update -s uptrend_limit_down --from-date 2024-01-01` 重算再评估。
+- 该策略命中数少而波动大，调参后建议先用 `quant hits update -s uptrend_limit_down --from-date 2018-01-01` 重算再评估。
 
 ---
 
@@ -250,13 +250,13 @@
 - 暖机 = `rise_days + 1` = 11。
 - 排序：成交额。
 - 两种阴线模式的区别：某日收出小阳线（`close > open`）但低于昨收时，`close_below_open` 不算阴线，`close_below_prev_close` 算。
-- 命中表只记录 2026-01-01 起的样本（`prev_hit/hit_3d/hit_5d/hit_10d/streak` 等历史列也只反映该区间内的命中）。
+- 命中表自 2018-01-02 起记录样本（`prev_hit/hit_3d/hit_5d/hit_10d/streak` 等历史列也只反映该区间内的命中）。
 
 ### 调参影响
 
 - `rise_pct` 调大 → 要求前期涨幅更陡；`vol_shrink` 调小 → 要求缩量更极致。
 - `min_bearish` 调大（如 = P）→ 要求近 P 日全部收阴。
-- 改完 yaml 后需重算命中表（`uv run quant hits update -s rise_shrink_pullback --from-date 2026-01-01`）。
+- 改完 yaml 后需重算命中表（`uv run quant hits update -s rise_shrink_pullback --from-date 2018-01-01`）。
 
 ---
 

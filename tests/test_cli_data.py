@@ -22,9 +22,6 @@ def test_data_init_db_runs_create_all_then_hits_then_migrate(monkeypatch):
     monkeypatch.setattr("quant.data.schemas.create_limit_tables",
                         lambda: calls.append("create_limit_tables")
                         or ["limit_up_daily"])
-    monkeypatch.setattr("quant.data.schemas.create_app_tables",
-                        lambda: calls.append("create_app_tables")
-                        or ["strategy_definitions"])
     monkeypatch.setattr("quant.data.schemas.migrate",
                         lambda: calls.append("migrate") or ["daily_basic.limit_status"])
     monkeypatch.setattr("quant.data.schemas.migrate_hit_columns",
@@ -35,7 +32,7 @@ def test_data_init_db_runs_create_all_then_hits_then_migrate(monkeypatch):
 
     assert result.exit_code == 0
     assert calls == ["create_all", "create_hit_tables", "create_limit_tables",
-                     "create_app_tables", "migrate", "migrate_hit_columns"]
+                     "migrate", "migrate_hit_columns"]
     assert "daily_basic.limit_status" in result.output
     assert "hit_ma_volume.industry" in result.output
 
@@ -46,15 +43,13 @@ def test_data_init_db_quiet_when_no_migrations(monkeypatch):
                         lambda: ["hit_ma_volume"])
     monkeypatch.setattr("quant.data.schemas.create_limit_tables",
                         lambda: ["limit_up_daily"])
-    monkeypatch.setattr("quant.data.schemas.create_app_tables",
-                        lambda: ["strategy_definitions"])
     monkeypatch.setattr("quant.data.schemas.migrate", lambda: [])
     monkeypatch.setattr("quant.data.schemas.migrate_hit_columns", lambda: [])
 
     result = runner.invoke(app, ["data", "init-db"])
 
     assert result.exit_code == 0
-    assert "已创建/确认 4 张表" in result.output
+    assert "已创建/确认 3 张表" in result.output
     assert "已补齐" not in result.output
 
 

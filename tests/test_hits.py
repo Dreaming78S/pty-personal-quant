@@ -110,7 +110,7 @@ def test_fill_hits_writes_ranked_eligible_rows(monkeypatch):
     assert captured["watermarks"] == [("hit_hits_dummy", "20240104")]
 
 
-def test_fill_hits_defaults_to_20240101_without_watermark(monkeypatch):
+def test_fill_hits_defaults_to_20180101_without_watermark(monkeypatch):
     calls = {}
     patch_deps(monkeypatch)
     monkeypatch.setattr(hits.ingest, "trade_dates_between",
@@ -119,7 +119,7 @@ def test_fill_hits_defaults_to_20240101_without_watermark(monkeypatch):
 
     hits.fill_hits("hits_dummy")
 
-    assert calls == {"start": "20240101", "end": "20240105"}
+    assert calls == {"start": "20180101", "end": "20240105"}
 
 
 def test_fill_hits_resumes_from_watermark(monkeypatch):
