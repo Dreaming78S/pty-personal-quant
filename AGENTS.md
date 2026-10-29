@@ -11,7 +11,7 @@
   - `uv run pytest tests/test_hits.py::test_name -q`（单个测试）
   - `$env:RUN_INTEGRATION=1; uv run pytest -m integration`（真实 MySQL/Tushare）
 - 保持现有风格：CLI/帮助/日志/用户文案和文档用中文；提交信息用英文 Conventional Commits（`fix: ...`、`feat: ...`、`docs: ...`）。
-- 本地网络环境：有时会开启代理
+- 本地网络环境：有时会开启代理，代理使用的端口是不固定的。此外值得一提的是，代理可能不稳定，有时不可用。
 
 ## 入口与数据流
 
