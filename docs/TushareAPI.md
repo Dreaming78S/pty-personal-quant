@@ -1,6 +1,6 @@
 # Tushare 数据接口文档整理
 
-> 本文档整理自 Tushare Pro 官网（https://tushare.pro/document/2）数据接口页面，涵盖**基础数据、行情数据、财务数据**三大类共 17 个常用接口。
+> 本文档整理自 Tushare Pro 官网（https://tushare.pro/document/2）数据接口页面，涵盖**基础数据、行情数据、财务数据**三大类共 18 个常用接口。
 >
 > 统一调用方式：
 >
@@ -32,12 +32,13 @@
   - [10. 复权因子（adj_factor）](#10-复权因子adj_factor)
   - [11. 沪深股通十大成交股（hsgt_top10）](#11-沪深股通十大成交股hsgt_top10)
   - [12. 每日指标（daily_basic）](#12-每日指标daily_basic)
+  - [13. A 股历史分钟行情（stk_mins）](#13-a-股历史分钟行情stk_mins)
 - [三、财务数据](#三财务数据)
-  - [13. 股东人数（stk_holdernumber）](#13-股东人数stk_holdernumber)
-  - [14. 利润表（income）](#14-利润表income)
-  - [15. 资产负债表（balancesheet）](#15-资产负债表balancesheet)
-  - [16. 现金流量表（cashflow）](#16-现金流量表cashflow)
-  - [17. 股东增减持（stk_holdertrade）](#17-股东增减持stk_holdertrade)
+  - [14. 股东人数（stk_holdernumber）](#14-股东人数stk_holdernumber)
+  - [15. 利润表（income）](#15-利润表income)
+  - [16. 资产负债表（balancesheet）](#16-资产负债表balancesheet)
+  - [17. 现金流量表（cashflow）](#17-现金流量表cashflow)
+  - [18. 股东增减持（stk_holdertrade）](#18-股东增减持stk_holdertrade)
 
 ---
 
@@ -572,9 +573,101 @@ df = pro.daily_basic(ts_code='', trade_date='20180726',
 
 ---
 
+### 13. A 股历史分钟行情（stk_mins）
+
+- **接口**：`stk_mins`
+- **描述**：获取 A 股分钟数据，支持 1min/5min/15min/30min/60min 行情，提供 Python SDK 和 http Restful API 两种方式。
+- **限量**：单次最大 8000 行数据，每分钟 500 频次，每天的总量 30 万频次，窗口 24 小时滚动刷新。可以通过股票代码和时间循环获取，本接口可以提供**超过 10 年历史分钟数据**。
+- **权限**：本接口数据需**单独开通权限**，请参考官网权限列表，前往权限中心申请（需勾选"A股历史分钟"）。
+- **官方页面**：https://tushare.pro/document/2?doc_id=370
+
+**输入参数**
+
+| 名称 | 类型 | 必选 | 描述 |
+|---|---|---|---|
+| ts_code | str | Y | 股票代码，e.g. 600000.SH |
+| freq | str | Y | 分钟频度（1min/5min/15min/30min/60min） |
+| start_date | datetime | N | 开始日期，格式：2023-08-25 09:00:00 |
+| end_date | datetime | N | 结束时间，格式：2023-08-25 19:00:00 |
+
+**freq 参数说明**
+
+| freq | 说明 |
+|---|---|
+| 1min | 1 分钟 |
+| 5min | 5 分钟 |
+| 15min | 15 分钟 |
+| 30min | 30 分钟 |
+| 60min | 60 分钟 |
+
+**输出参数**
+
+| 名称 | 类型 | 默认显示 | 描述 |
+|---|---|---|---|
+| ts_code | str | Y | 股票代码 |
+| trade_time | str | Y | 交易时间 |
+| open | float | Y | 开盘价 |
+| close | float | Y | 收盘价 |
+| high | float | Y | 最高价 |
+| low | float | Y | 最低价 |
+| vol | int | Y | 成交量（股） |
+| amount | float | Y | 成交金额（元） |
+
+> 注：本接口为**未复权**行情，分钟频度下暂不提供复权选项；如需复权分钟线，可结合 `adj_factor` 复权因子自行计算。
+
+**接口示例**
+
+```python
+pro = ts.pro_api()
+
+# 获取浦发银行 600000.SH 的历史 1 分钟数据
+df = pro.stk_mins(ts_code='600000.SH', freq='1min',
+                  start_date='2023-08-25 09:00:00', end_date='2023-08-25 19:00:00')
+
+# 获取 5 分钟数据（按时间段）
+df = pro.stk_mins(ts_code='600000.SH', freq='5min',
+                  start_date='2023-08-25 09:30:00', end_date='2023-08-25 15:00:00')
+
+# 由于单次最大 8000 行，超长历史需按时间循环分批获取
+import pandas as pd
+
+def fetch_mins(ts_code, freq, start, end):
+    """按天/按段循环拉取分钟行情并拼接"""
+    frames = []
+    date_range = pd.date_range(start, end, freq='D')
+    for day in date_range:
+        s = f"{day.strftime('%Y-%m-%d')} 09:00:00"
+        e = f"{day.strftime('%Y-%m-%d')} 19:00:00"
+        df = pro.stk_mins(ts_code=ts_code, freq=freq, start_date=s, end_date=e)
+        if df is not None and not df.empty:
+            frames.append(df)
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+df = fetch_mins('600000.SH', '1min', '2023-08-01', '2023-08-31')
+```
+
+**数据样例**
+
+```
+  ts_code           trade_time  close  open  high   low      vol    amount
+0 600000.SH  2023-08-25 15:00:00   7.05  7.05  7.05  7.05  235500.0  1660275.0
+1 600000.SH  2023-08-25 14:59:00   7.05  7.05  7.05  7.05       0.0        0.0
+2 600000.SH  2023-08-25 14:58:00   7.05  7.05  7.05  7.05       0.0        0.0
+3 600000.SH  2023-08-25 14:57:00   7.05  7.06  7.06  7.05   51800.0   365491.0
+4 600000.SH  2023-08-25 14:56:00   7.05  7.05  7.06  7.04   92700.0   653831.0
+...
+236 600000.SH 2023-08-25 09:34:00  7.01  7.02  7.02  7.00  120500.0   845311.0
+237 600000.SH 2023-08-25 09:33:00  7.01  7.01  7.02  7.00  126000.0   883188.0
+238 600000.SH 2023-08-25 09:32:00  7.01  7.02  7.02  6.99  236699.0  1659260.0
+239 600000.SH 2023-08-25 09:31:00  7.02  6.99  7.02  6.97  807500.0  5649956.0
+240 600000.SH 2023-08-25 09:30:00  6.99  6.99  6.99  6.99  103700.0   724863.0
+```
+
+---
+
 ## 三、财务数据
 
-### 13. 股东人数（stk_holdernumber）
+### 14. 股东人数（stk_holdernumber）
 
 - **接口**：`stk_holdernumber`
 - **描述**：获取上市公司股东户数数据，数据不定期公布。
@@ -611,7 +704,7 @@ df = pro.stk_holdernumber(ts_code='300199.SZ',
 
 ---
 
-### 14. 利润表（income）
+### 15. 利润表（income）
 
 - **接口**：`income`
 - **描述**：获取上市公司财务利润表数据。
@@ -764,7 +857,7 @@ df = pro.income_vip(period='20181231',
 
 ---
 
-### 15. 资产负债表（balancesheet）
+### 16. 资产负债表（balancesheet）
 
 - **接口**：`balancesheet`
 - **描述**：获取上市公司资产负债表。
@@ -980,7 +1073,7 @@ df2 = pro.balancesheet_vip(period='20181231',
 
 ---
 
-### 16. 现金流量表（cashflow）
+### 17. 现金流量表（cashflow）
 
 - **接口**：`cashflow`
 - **描述**：获取上市公司现金流量表。
@@ -1135,7 +1228,7 @@ df2 = pro.cashflow_vip(period='20181231', fields='')
 
 ---
 
-### 17. 股东增减持（stk_holdertrade）
+### 18. 股东增减持（stk_holdertrade）
 
 - **接口**：`stk_holdertrade`
 - **描述**：获取上市公司增减持数据，了解重要股东近期及历史上的股份增减变化。
@@ -1203,6 +1296,7 @@ df = pro.stk_holdertrade(ann_date='20190426', trade_type='IN')
 | 行情数据 | 复权因子 | adj_factor | 2000 |
 | 行情数据 | 沪深股通十大成交股 | hsgt_top10 | — |
 | 行情数据 | 每日指标 | daily_basic | 2000 |
+| 行情数据 | A 股历史分钟行情 | stk_mins | 单独开通权限 |
 | 财务数据 | 股东人数 | stk_holdernumber | 2000 |
 | 财务数据 | 利润表 | income / income_vip | 2000 / 5000 |
 | 财务数据 | 资产负债表 | balancesheet / balancesheet_vip | 2000 / 5000 |
