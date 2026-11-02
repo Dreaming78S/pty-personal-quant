@@ -57,27 +57,27 @@ from quant.data import db  # noqa: E402
 
 # ==============================================================================
 # 统计区间
-DEFAULT_START = "20200101"
+DEFAULT_START = "20261001"
 DEFAULT_END = "latest"
 
 # 信号日（T日）开盘/收盘价相对于昨收（T-1日收盘价）的变化比例范围限制
-DEFAULT_GAP = (0, 0.11)
-DEFAULT_CLOSE_CHG = (0, 0.11)
+DEFAULT_GAP = (0.00, 0.11)
+DEFAULT_CLOSE_CHG = (0.0, 0.11)
 
 # 近N日收盘价涨幅范围限制
-DEFAULT_RISE_DAYS = 10
-DEFAULT_RISE = (-90, 90)
+DEFAULT_RISE_DAYS = 5
+DEFAULT_RISE = (-10, 10)
 
 # 止盈
-DEFAULT_OPEN_EXIT = 0.03
+DEFAULT_OPEN_EXIT = 0.019   # 相对于买入价2%其实就相当于相对于持仓成本价涨1.9%
 
 # 信号日次日开盘价相对于信号日收盘价的比例限制（T+1日进入的条件限制）
-DEFAULT_ENTRY_GAP = (-0.11, 0.11)
+DEFAULT_ENTRY_GAP = (-0.11, 0)
 # ==============================================================================
 
 
 # 不用改
-DEFAULT_GENERATE_REPORT = False
+DEFAULT_GENERATE_REPORT = True
 PRICE_CHUNK = 500
 GAP_EPS = 1e-9
 LIMIT_EPS = 1e-6

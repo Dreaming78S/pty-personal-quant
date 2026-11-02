@@ -23,6 +23,8 @@ CO_MESSAGE_KEY = "多策略共振"
 COMBINED_MESSAGE_KEY = "5日复合共振"
 COMBINED_BASE_STRATEGY = "rise_shrink_pullback"
 COMBINED_WINDOW_DAYS = 5
+PAIR_MESSAGE_KEY = "趋势跌停+涨停洗盘"
+PAIR_STRATEGIES = ("uptrend_limit_down", "limit_up_shakeout")
 RECOMMEND_MESSAGE_KEY = "今日最终推荐"
 RETRY_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 1.0
@@ -128,6 +130,39 @@ def format_co_message(trade_date: str, hits: pd.DataFrame) -> FeishuMessage:
         lines.append(f"{stock} — {strategies}")
     return _finish(f"{title} 共 {len(events)} 只", lines, True,
                    template="orange")
+
+
+def format_pair_message(trade_date: str, hits: pd.DataFrame) -> FeishuMessage:
+    """趋势跌停 + 涨停洗盘命中卡片；同一股票命中两个策略时合并展示。"""
+    title = f"【{PAIR_MESSAGE_KEY}】{_display_date(trade_date)}"
+    if hits.empty:
+        return FeishuMessage(title, ("今日无命中",), False)
+
+    details = hits.drop_duplicates("ts_code").set_index("ts_code")
+    grouped = hits.groupby("ts_code", sort=False)["strategy"].agg(
+        lambda values: tuple(dict.fromkeys(str(v) for v in values))
+    )
+    events = pd.DataFrame({
+        "ts_code": grouped.index,
+        "strategies": grouped.values,
+    })
+    events["n_strategies"] = events["strategies"].map(len)
+    events["amount"] = events["ts_code"].map(details["amount"])
+    events = events.sort_values(["n_strategies", "amount"],
+                                ascending=[False, False])
+
+    lines = []
+    for index, (_, event) in enumerate(events.iterrows(), start=1):
+        row = details.loc[event["ts_code"]]
+        labels = "、".join(
+            recommend.strategy_label(strategy_name)
+            for strategy_name in event["strategies"]
+        )
+        stock = _format_stock(index, row.get("name"),
+                              row.get("industry"), row.get("raw_close"))
+        lines.append(f"{stock} — {labels}")
+    return _finish(f"{title} 共 {len(events)} 只", lines, True,
+                   template="green")
 
 
 def render_text(message: FeishuMessage) -> str:
@@ -243,6 +278,25 @@ def build_co_message(date: str | None = None) -> FeishuMessage:
         frames.append(rows)
     hits = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     return format_co_message(target, hits)
+
+
+def build_pair_message(date: str | None = None) -> FeishuMessage:
+    """趋势跌停 + 涨停洗盘卡片；命中表未追平时直接报错。"""
+    target = loader.resolve_trade_date(date)
+    frames = []
+    for name in PAIR_STRATEGIES:
+        _check_watermark(name, target)
+        table = schemas.hit_table_name(name)
+        rows = db.read_df(
+            f"SELECT ts_code, name, industry, raw_close, amount "
+            f"FROM `{table}` WHERE trade_date=%s", (target,))
+        if rows.empty:
+            continue
+        rows = rows.copy()
+        rows["strategy"] = name
+        frames.append(rows)
+    hits = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    return format_pair_message(target, hits)
 
 
 def format_combined_message(trade_date: str, window_dates: list[str],
@@ -392,10 +446,11 @@ def build_recommend_message(date: str | None = None,
 
 
 def build_default_messages(date: str | None = None) -> dict[str, FeishuMessage]:
-    """默认推送：今日最终推荐 + 多策略共振两张卡。"""
+    """默认推送：今日最终推荐 + 趋势跌停/涨停洗盘 + 多策略共振三张卡。"""
     target = loader.resolve_trade_date(date)
     return {
         RECOMMEND_MESSAGE_KEY: build_recommend_message(target),
+        PAIR_MESSAGE_KEY: build_pair_message(target),
         CO_MESSAGE_KEY: build_co_message(target),
     }
 
@@ -404,7 +459,7 @@ def notify_hits(strategy: str | None = None, date: str | None = None,
                 include_co: bool = True) -> dict[str, str]:
     """逐条推送飞书卡片；单条失败不中断，返回 {名称: 状态描述}。
 
-    strategy 为空时推默认两卡（今日最终推荐 + 多策略共振）；
+    strategy 为空时推默认三卡（今日最终推荐 + 趋势跌停/涨停洗盘 + 多策略共振）；
     指定策略（或 all）时推各策略卡 + 共振卡（旧行为）。
     """
     settings = get_settings()

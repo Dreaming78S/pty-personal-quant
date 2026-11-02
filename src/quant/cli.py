@@ -159,14 +159,14 @@ def limit_update(
 @app.command("notify")
 def notify_cmd(
     strategy: str = typer.Option(None, "--strategy", "-s",
-                                 help="缺省=今日最终推荐+多策略共振；all=全部策略卡；策略名/逗号组合"),
+                                 help="缺省=今日最终推荐+趋势跌停/涨停洗盘+多策略共振；all=全部策略卡；策略名/逗号组合"),
     date: str = typer.Option(None, "--date", "-d",
                              help="交易日，缺省最新；非交易日自动回退"),
     dry_run: bool = typer.Option(False, "--dry-run", help="只打印消息不发送"),
     co: bool = typer.Option(True, "--co/--no-co",
                             help="是否附带多策略共振卡片（仅 --strategy 有效）"),
 ) -> None:
-    """推送飞书卡片。缺省只发两张卡（今日最终推荐 + 多策略共振），不再逐策略刷屏。"""
+    """推送飞书卡片。缺省发三张卡（今日最终推荐 + 趋势跌停/涨停洗盘 + 多策略共振），不再逐策略刷屏。"""
     from quant.engine import notify
     from quant.utils.dates import to_yyyymmdd
     from quant.utils.logging import setup_logging

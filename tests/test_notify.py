@@ -57,6 +57,18 @@ def _co_hits_frame():
     })
 
 
+def _pair_hits_frame():
+    return pd.DataFrame({
+        "strategy": ["uptrend_limit_down", "limit_up_shakeout",
+                     "uptrend_limit_down", "limit_up_shakeout"],
+        "ts_code": ["603936.SH", "603936.SH", "603285.SH", "600000.SH"],
+        "name": ["博敏电子", "博敏电子", "键邦股份", "浦发银行"],
+        "industry": ["元器件", "元器件", "化工原料", "银行"],
+        "raw_close": [21.34, 21.34, 37.86, 10.25],
+        "amount": [1068000.0, 1068000.0, 205000.0, 9999999.0],
+    })
+
+
 def _rise_rows():
     return pd.DataFrame({
         "ts_code": ["603936.SH", "603285.SH", "600000.SH"],
@@ -187,6 +199,52 @@ def test_format_co_message_without_co_hits():
     assert message.title == "【多策略共振】2026-09-18"
     assert message.lines == ("今日无共振",)
     assert message.has_hits is False
+
+
+def test_format_pair_message_lists_both_strategies():
+    message = notify.format_pair_message("20260918", _pair_hits_frame())
+
+    assert message.title == "【趋势跌停+涨停洗盘】2026-09-18 共 3 只"
+    assert message.lines == (
+        "1. **博敏电子** 21.34 [元器件] — 上涨趋势跌停、涨停洗盘",
+        "2. **浦发银行** 10.25 [银行] — 涨停洗盘",
+        "3. **键邦股份** 37.86 [化工原料] — 上涨趋势跌停",
+    )
+    assert message.has_hits is True
+    assert message.template == "green"
+
+
+def test_format_pair_message_without_hits():
+    message = notify.format_pair_message("20260918", _pair_hits_frame().iloc[0:0])
+
+    assert message.title == "【趋势跌停+涨停洗盘】2026-09-18"
+    assert message.lines == ("今日无命中",)
+    assert message.has_hits is False
+
+
+def test_build_pair_message_checks_watermarks_and_queries_both(monkeypatch):
+    monkeypatch.setattr(notify.loader, "resolve_trade_date",
+                        lambda date=None: "20260918")
+    monkeypatch.setattr(notify.ingest, "get_watermark",
+                        lambda table: "20260918")
+    seen = []
+
+    def fake_read(sql, params=None):
+        seen.append(sql)
+        if "hit_uptrend_limit_down" in sql:
+            return _pair_hits_frame().query(
+                "strategy == 'uptrend_limit_down'").drop(columns=["strategy"])
+        return _pair_hits_frame().query(
+            "strategy == 'limit_up_shakeout'").drop(columns=["strategy"])
+
+    monkeypatch.setattr(notify.db, "read_df", fake_read)
+
+    message = notify.build_pair_message("20260918")
+
+    assert message.title == "【趋势跌停+涨停洗盘】2026-09-18 共 3 只"
+    assert len(seen) == 2
+    assert any("hit_uptrend_limit_down" in sql for sql in seen)
+    assert any("hit_limit_up_shakeout" in sql for sql in seen)
 
 
 def test_feishu_payload_builds_card():
@@ -678,22 +736,27 @@ def test_build_recommend_message_without_picks(monkeypatch):
 
 
 
-def test_build_default_messages_is_recommend_plus_co(monkeypatch):
+def test_build_default_messages_is_recommend_pair_plus_co(monkeypatch):
     monkeypatch.setattr(notify.loader, "resolve_trade_date",
                         lambda date=None: "20260918")
     recommend_message = notify.FeishuMessage("【今日最终推荐】2026-09-18",
                                              ("今日无符合推荐条件的股票",), False)
+    pair_message = notify.FeishuMessage("【趋势跌停+涨停洗盘】2026-09-18",
+                                        ("今日无命中",), False)
     co_message = notify.FeishuMessage("【多策略共振】2026-09-18",
                                       ("今日无共振",), False)
     monkeypatch.setattr(notify, "build_recommend_message",
                         lambda date, config=None: recommend_message)
+    monkeypatch.setattr(notify, "build_pair_message",
+                        lambda date: pair_message)
     monkeypatch.setattr(notify, "build_co_message",
                         lambda date: co_message)
 
     messages = notify.build_default_messages("20260918")
 
-    assert list(messages) == ["今日最终推荐", "多策略共振"]
+    assert list(messages) == ["今日最终推荐", "趋势跌停+涨停洗盘", "多策略共振"]
     assert messages["今日最终推荐"] is recommend_message
+    assert messages["趋势跌停+涨停洗盘"] is pair_message
     assert messages["多策略共振"] is co_message
 
 

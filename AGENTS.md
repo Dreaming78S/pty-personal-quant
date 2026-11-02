@@ -20,7 +20,9 @@
 - `quant data update` 只写 MySQL。以下命令会通过 `ensure_all` / `ensure=True` 刷新镜像：`select`、`hits update`、`limit update`、`backtest`。`data status`、`recommend`、`notify` 不会刷新镜像。运行 `recommend` / `notify` 前先执行 `hits update`；默认 `notify` 的“今日最终推荐”还依赖本地 `index_daily` 缓存，缓存缺失时先执行 `quant data update -t index_daily`。
 - 日期在 MySQL 中是 `CHAR(8)` 的 `YYYYMMDD`；CLI 也接受 `YYYY-MM-DD`。`amount` 单位是千元，`circ_mv` 单位是万元。行情面板包含后复权 `open/high/low/close` 和 `raw_*`；涨跌停判断用 `raw_close` 对 `raw_pre_close`（交易所除权后昨收，或 `up_limit/down_limit`），停牌判断用 `suspended`。
 - `src/quant/data/schemas.py` 是表注册表：`TABLES`（入库表）、`HIT_TABLES`（由 `HIT_STRATEGIES` 派生）、`LIMIT_TABLES`（涨跌停派生表）。`quant data init-db` 幂等。已有表加列需要在 `MIGRATIONS`/`WIDENINGS`（hit 表用 `HIT_ADDED_COLUMNS`）登记；新增源表需要 `ingest.SPECS` 条目；否则现有库或 `data update` 会漏掉。
-- `tmp_scripts/` 被 gitignore；持久逻辑应放在 `src/quant`。重建 CLI 逻辑在 `maintenance.py`（`parse_rebuild_args` / `run_rebuild_cli`），报告辅助函数在 `engine/`；`tests/test_rebuild_script.py`、`tests/test_idea_backtest_report.py`、`tests/test_multi_strategy_report.py` 只测库函数，不依赖本地 `tmp_scripts/`，全新克隆也能通过。
+- `tmp_scripts/` 已纳入版本管理（`scripts/` 仍被 gitignore）；持久逻辑仍应放在 `src/quant`。重建 CLI 逻辑在 `maintenance.py`（`parse_rebuild_args` / `run_rebuild_cli`），报告辅助函数在 `engine/`；`tests/test_rebuild_script.py`、`tests/test_idea_backtest_report.py`、`tests/test_multi_strategy_report.py` 只测库函数，不依赖本地 `tmp_scripts/`，全新克隆也能通过。
+- 每日盘后定时任务：Windows 任务 `MyAStockQuant_DailyUpdate` 在周一至周五 17:30 执行 `tmp_scripts/daily_update_task.cmd` -> `tmp_scripts/daily_update.py`，依次做行情更新、命中表更新、涨跌停表更新、状态校验和默认 `notify`（3 张卡）；非交易日跳过推送，日志在 `logs/daily_update.log`。
+- `daily.high/low` 以 Tushare `daily` 为准；日常更新和 `notify` 都不使用 BaoStock。`rebuild_daily_high_low.py` 只是独立实验脚本，不要挂到日常任务，也不要用它覆盖 `daily.high/low`。
 
 ## 策略与命中表
 
@@ -39,7 +41,7 @@
 - 成交和估值用复权价；涨跌停判断用原始价对 `up_limit/down_limit`，停牌判断用 `suspended`。`top_n` 为空表示等权买入全部信号股（`-n 0` 也是全部）。周调仓 = 每周第一个交易日。
 - 默认股票池：主板、非 ST、上市满 60 日、非停牌。`select --boards all`（或逗号列表）可放宽。`loader` 以 `stock_basic` 的 `ts_code` 为准过滤旧代码别名（如 `000022.SZ`、`000043.SZ`、`300114.SZ`）。
 - `recommend` 和默认 `notify` 读取 `hit_*` 表，并要求所有 `HIT_STRATEGIES` 水位线 >= 目标日期，否则报错。`recommend` 使用 `ignore_gate=True`，闸门关闭时仍列出股票；展示的 7 个指数状态是真实的。规则在 `configs/recommend.yaml`（`max_picks` 是顶层字段，分层配置在 `tiers` 下）。
-- `notify` 默认发 2 张卡（今日最终推荐 + 多策略共振）；`-s <策略名>` 发该策略卡 + 多策略共振，`-s all` 发全部策略卡 + 多策略共振 + 5日复合共振；`--no-co` 跳过共振类卡片。`--dry-run` 不需要 webhook；真实发送需要 `FEISHU_WEBHOOK_URL`。
+- `notify` 默认发 3 张卡（今日最终推荐 + 趋势跌停/涨停洗盘 + 多策略共振）；`-s <策略名>` 发该策略卡 + 多策略共振，`-s all` 发全部策略卡 + 多策略共振 + 5日复合共振；`--no-co` 跳过共振类卡片。`--dry-run` 不需要 webhook；真实发送需要 `FEISHU_WEBHOOK_URL`。
 
 ## 飞书机器人
 
