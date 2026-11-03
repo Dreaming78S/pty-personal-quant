@@ -21,10 +21,10 @@ def make_bars(raw_close, open_, close, low, vols, raw_pre_close=None):
 
 
 def test_limit_up_shakeout_true_on_pullback():
-    raw_close = [10.0, 11.0, 10.4]
-    close = [10.0, 11.0, 10.5]
-    open_ = [10.0, 10.8, 11.0]
-    low = [9.9, 10.9, 11.0]
+    raw_close = [10.0, 11.0, 11.2]
+    close = [10.0, 11.0, 11.2]
+    open_ = [10.0, 10.8, 11.5]
+    low = [9.9, 10.9, 11.05]
     vols = [100, 100, 300]
     s = get_strategy("limit_up_shakeout")
 
@@ -35,10 +35,10 @@ def test_limit_up_shakeout_true_on_pullback():
 
 def test_limit_up_shakeout_uses_ex_rights_adjusted_pre_close():
     # 除权日：前一日原始收盘 10.5，除权后昨收 10.0；11.0 相对昨收是 +10% 涨停。
-    raw_close = [10.5, 11.0, 10.4]
+    raw_close = [10.5, 11.0, 11.2]
     raw_pre_close = [float("nan"), 10.0, 11.0]
-    close = [10.5, 11.0, 10.5]
-    open_ = [10.5, 10.8, 11.0]
+    close = [10.5, 11.0, 11.2]
+    open_ = [10.5, 10.8, 11.5]
     low = [10.4, 10.9, 11.0]
     vols = [100, 100, 300]
     s = get_strategy("limit_up_shakeout")
@@ -50,32 +50,46 @@ def test_limit_up_shakeout_uses_ex_rights_adjusted_pre_close():
 
 
 def test_limit_up_shakeout_false_without_volume_spike():
-    raw_close = [10.0, 11.0, 10.4]
-    close = [10.0, 11.0, 10.5]
-    open_ = [10.0, 10.8, 11.0]
-    low = [9.9, 10.9, 11.0]
+    raw_close = [10.0, 11.0, 11.2]
+    close = [10.0, 11.0, 11.2]
+    open_ = [10.0, 10.8, 11.5]
+    low = [9.9, 10.9, 11.05]
     vols = [100, 100, 150]
     s = get_strategy("limit_up_shakeout")
     assert not s.generate_signals(
         make_bars(raw_close, open_, close, low, vols)).any()
 
 
-def test_limit_up_shakeout_false_when_support_breaks():
-    raw_close = [10.0, 11.0, 10.4]
-    close = [10.0, 11.0, 10.5]
-    open_ = [10.0, 10.8, 11.0]
-    low = [9.9, 10.9, 10.9]
+def test_limit_up_shakeout_false_when_close_below_prev_close():
+    raw_close = [10.0, 11.0, 10.9]
+    close = [10.0, 11.0, 10.9]
+    open_ = [10.0, 10.8, 11.5]
+    low = [9.9, 10.9, 10.7]
     vols = [100, 100, 300]
     s = get_strategy("limit_up_shakeout")
     assert not s.generate_signals(
         make_bars(raw_close, open_, close, low, vols)).any()
 
 
+def test_limit_up_shakeout_low_below_prev_close_still_signals():
+    # 支撑只看收盘：盘中最低跌破昨收、收盘守住，仍算命中。
+    raw_close = [10.0, 11.0, 11.2]
+    close = [10.0, 11.0, 11.2]
+    open_ = [10.0, 10.8, 11.5]
+    low = [9.9, 10.9, 10.5]
+    vols = [100, 100, 300]
+    s = get_strategy("limit_up_shakeout")
+
+    signals = s.generate_signals(make_bars(raw_close, open_, close, low, vols))
+
+    assert list(signals) == [False, False, True]
+
+
 def test_limit_up_shakeout_exact_volume_boundary_not_signaled():
-    raw_close = [10.0, 11.0, 10.4]
-    close = [10.0, 11.0, 10.5]
-    open_ = [10.0, 10.8, 11.0]
-    low = [9.9, 10.9, 11.0]
+    raw_close = [10.0, 11.0, 11.2]
+    close = [10.0, 11.0, 11.2]
+    open_ = [10.0, 10.8, 11.5]
+    low = [9.9, 10.9, 11.05]
     vols = [100, 100, 200]  # 200 == 2.0 × 昨日 100，严格大于才放量
     s = get_strategy("limit_up_shakeout")
     signals = s.generate_signals(make_bars(raw_close, open_, close, low, vols))

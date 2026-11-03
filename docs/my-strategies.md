@@ -19,7 +19,7 @@
 | 1 | `ma_volume` | 短均线上穿长均线 + 放量 | 21 | 成交额 | `ma_short=5`, `ma_long=20`, `vol_ma=20`, `vol_ratio=1.5` |
 | 2 | `turtle_trade` | 20 日新高 + 成交额过亿 + 阳线真涨 | 21 | 流通市值 | `high_days=20`, `min_amount=1e8` |
 | 3 | `high_tight_flag` | 强动量后高位窄幅缩量整理 | 40 | 成交额 | `momentum_days=40`, `momentum_ratio=1.6`, `tight_days=10`, `tight_ratio=1.15`, `support_ratio=0.8`, `vol_base_days=20`, `vol_shrink=0.6` |
-| 4 | `limit_up_shakeout` | 昨日涨停、今日放量收阴不破昨收 | 3 | 成交额 | `limit_pct=0.095`, `vol_ratio=2.0` |
+| 4 | `limit_up_shakeout` | 昨日涨停、今日放量收阴但收盘守住昨收 | 3 | 成交额 | `limit_pct=0.095`, `vol_ratio=2.0` |
 | 5 | `uptrend_limit_down` | 上升趋势中放量跌停（错杀） | 61 | 成交额 | `ma_short=20`, `ma_long=60`, `limit_pct=0.095`, `vol_ma=20`, `vol_ratio=2.0` |
 | 6 | `rps_breakout` | 120 日 RPS≥90 且接近 120 日高点 | 121 | RPS 值 | `window=120`, `rps_threshold=90`, `high_ratio=0.9`, `high_min_bars=60` |
 | 7 | `rise_shrink_pullback` | 近 M 日涨超 X% 后缩量阴线回调 | 11 | 成交额 | `rise_days=10`, `rise_pct=25.0`, `pullback_days=3`, `min_bearish=2`, `vol_shrink=0.80`, `bearish_mode=close_below_open` |
@@ -125,7 +125,7 @@
 
 ## 4. LimitUpShakeout — 涨停洗盘回踩
 
-**定位**：昨日涨停后今日放量收阴但支撑不破，捕捉主力洗盘后的回踩确认形态。
+**定位**：昨日涨停后今日放量收阴但收盘不破昨收，捕捉主力洗盘后的回踩确认形态。
 
 ### 参数
 
@@ -139,13 +139,14 @@
 1. **昨日涨停**：`raw_close(T-1) >= raw_pre_close(T-1) × (1 + limit_pct)`（**不复权真实价**判定，基准为交易所除权后的昨收）。
 2. **今日收阴**：`close(T) < open(T)`（后复权价）。
 3. **今日放量**：`vol(T) > vol_ratio × vol(T-1)`。
-4. **支撑不破**：`low(T) >= close(T-1)`（今日最低不低于昨日收盘，后复权价）。
+4. **收盘不破昨收**：`close(T) >= close(T-1)`（今日收盘不低于昨日收盘，后复权价；盘中最低价可以跌破昨收）。
 
 ### 说明
 
 - 暖机 = 3。
 - 排序：成交额。
-- 涨停用真实价，但基准是交易所除权后的昨收 `raw_pre_close`，不是前一日原始收盘；收阴与支撑用后复权价。这样除权缺口不会制造假涨停，也不会漏掉除权日的真涨停。
+- 涨停用真实价，但基准是交易所除权后的昨收 `raw_pre_close`，不是前一日原始收盘；收阴与收盘支撑用后复权价。这样除权缺口不会制造假涨停，也不会漏掉除权日的真涨停。
+- 收阴要求 `close < open`、支撑要求 `close >= close(T-1)`，因此命中日实际是跳空高开后回落收阴、但收盘仍守住昨收的"假阴真阳"形态；盘中最低价不做限制。
 
 ### 调参影响
 

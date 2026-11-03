@@ -140,7 +140,7 @@ uv run python tmp_scripts/rebuild_data.py --skip-truncate    # 中断后不清�
 | `ma_volume` | 5 日均线上穿 20 日均线 + 放量 | 成交额 |
 | `turtle_trade` | 20 日新高 + 成交额过亿 + 阳线真涨 | 流通市值 |
 | `high_tight_flag` | 强动量后高位窄幅缩量整理 | 成交额 |
-| `limit_up_shakeout` | 昨日涨停、今日放量收阴不破昨收 | 成交额 |
+| `limit_up_shakeout` | 昨日涨停、今日放量收阴但收盘守住昨收 | 成交额 |
 | `uptrend_limit_down` | 上升趋势中放量跌停（错杀） | 成交额 |
 | `rps_breakout` | 120 日 RPS≥90 且接近 120 日高点 | RPS |
 | `rise_shrink_pullback` | 近 10 日涨超 20% 后缩量阴线回调 | 成交额 |
