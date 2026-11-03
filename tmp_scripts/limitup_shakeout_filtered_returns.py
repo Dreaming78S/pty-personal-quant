@@ -8,21 +8,35 @@
    DEFAULT_RISE[0] <= close(T) / close(T-N) - 1 <= DEFAULT_RISE[1]
 4. T+1 买入低开落在闭区间：DEFAULT_ENTRY_GAP[0] <= raw_open(T+1) / raw_pre_close(T+1) - 1 <= DEFAULT_ENTRY_GAP[1]
    （raw_pre_close(T+1) 是交易所除权后的 T 日收盘，普通日等于 T 日收盘）
+5. （可选，默认不要求）T 日最低价不破前一交易日收盘价：
+   low(T) >= close(T-1)（后复权；用 --require-low-support 开启）
 
 收益：T+1 开盘买入；
-1. T+2 开盘相对 T+1 开盘涨幅 > DEFAULT_OPEN_EXIT：按 T+2 开盘卖出；
-2. 否则若 T+2 最高价相对 T+1 开盘涨幅 >= DEFAULT_OPEN_EXIT：按 DEFAULT_OPEN_EXIT 止盈；
+止盈率不再固定，按 T+1 日内涨幅分档确定（默认 DEFAULT_EXIT_TIERS，见
+src/quant/engine/exit_tiers.py；可用 --exit-tiers 传 JSON 覆盖，--open-exit 退回固定阈值）：
+    day1_ret = close(T+1) / open(T+1) - 1
+    (左开右闭区间)            止盈率
+    ≤ -5%                    -2%（止损离场）
+    -5% ~ 0%                 +1%
+    0% ~ 5%                  +2%
+    5% ~ 7%                  +3%
+    > 7%                     +4%
+每档执行方式与固定止盈一致，只是阈值逐样本不同：
+1. T+2 开盘相对 T+1 开盘涨幅 > 该档止盈率：按 T+2 开盘卖出（开盘已高于目标价，以开盘价成交）；
+2. 否则若 T+2 最高价相对 T+1 开盘涨幅 >= 该档止盈率：按该止盈率卖出；
 3. 否则持有到 T+2 收盘卖出：
     open_ret = open(T+2) / open(T+1) - 1
     high_ret = high(T+2) / open(T+1) - 1
     close_ret = close(T+2) / open(T+1) - 1
-    return = open_ret if open_ret > DEFAULT_OPEN_EXIT
-             else DEFAULT_OPEN_EXIT if high_ret >= DEFAULT_OPEN_EXIT
+    threshold = 按日涨幅分档的止盈率
+    return = open_ret if open_ret > threshold
+             else threshold if high_ret >= threshold
              else close_ret
 
 价格口径：
 - T 日高开、T 日收盘涨跌幅和 T+1 买入低开用不复权 raw_open/raw_close 对 raw_pre_close，raw_pre_close 是交易所除权后的昨收；
 - 近 N 日涨幅和买卖收益用后复权价，等价于分红再投资；
+- 可选的最低价条件用后复权 low(T) 对前一日后复权收盘价 close(T-1)；
 - CSV 同时保留不复权收益，便于核对。
 
 用法：
@@ -30,6 +44,8 @@
     uv run python tmp_scripts/limitup_shakeout_filtered_returns.py --report
     uv run python tmp_scripts/limitup_shakeout_filtered_returns.py --start 2024-01-01 --end 2026-10-23 --report
     uv run python tmp_scripts/limitup_shakeout_filtered_returns.py --gap 0.02 0.08 --close-chg 0.00 0.05 --entry-gap -0.06 -0.01 --rise 0.05 0.30
+    uv run python tmp_scripts/limitup_shakeout_filtered_returns.py --require-low-support --report
+    uv run python tmp_scripts/limitup_shakeout_filtered_returns.py --exit-tiers "[[null,-0.05,-0.02],[-0.05,0,0.01],[0,0.05,0.02],[0.05,0.07,0.03],[0.07,null,0.04]]"
 
 DEFAULT_END = "latest" 表示自动使用命中表最新日期；DEFAULT_GENERATE_REPORT = False 表示默认只打印控制台，不生成报告文件。
 
@@ -54,10 +70,20 @@ sys.path.insert(0, str(ROOT / "src"))
 os.chdir(ROOT)
 
 from quant.data import db  # noqa: E402
+from quant.engine.exit_tiers import (  # noqa: E402
+    DEFAULT_EXIT_TIERS,
+    apply_exit_tier_codes,
+    apply_exit_thresholds,
+    format_tiers_summary,
+    parse_exit_tiers,
+    tier_labels,
+    tiers_from_scalar,
+    tiers_to_jsonable,
+)
 
 # ==============================================================================
 # 统计区间
-DEFAULT_START = "20261001"
+DEFAULT_START = "20241101"
 DEFAULT_END = "latest"
 
 # 信号日（T日）开盘/收盘价相对于昨收（T-1日收盘价）的变化比例范围限制
@@ -68,11 +94,15 @@ DEFAULT_CLOSE_CHG = (0.0, 0.11)
 DEFAULT_RISE_DAYS = 5
 DEFAULT_RISE = (-10, 10)
 
-# 止盈
-DEFAULT_OPEN_EXIT = 0.019   # 相对于买入价2%其实就相当于相对于持仓成本价涨1.9%
+# 止盈：按 T+1 日内涨幅（close(T+1)/open(T+1)-1）分段的动态止盈，左开右闭；
+# 默认分档是 quant.engine.exit_tiers.DEFAULT_EXIT_TIERS（一个变量概括整个分段函数），
+# 想改默认直接改那个变量；也可用 --exit-tiers 传 JSON 覆盖，或 --open-exit 退回固定阈值（单段）
 
 # 信号日次日开盘价相对于信号日收盘价的比例限制（T+1日进入的条件限制）
 DEFAULT_ENTRY_GAP = (-0.11, 0)
+
+# 是否要求信号日最低价 >= 前一交易日收盘价（后复权）；默认不要求
+DEFAULT_REQUIRE_LOW_SUPPORT = True
 # ==============================================================================
 
 
@@ -95,12 +125,18 @@ CSV_COLUMN_NAMES: dict[str, str] = {
     "t_close_raw": "命中日收盘价(不复权)",
     "t_pre_close_raw": "命中日昨收价(除权后)",
     "t_adj_open": "命中日开盘价(后复权)",
+    "t_adj_low": "命中日最低价(后复权)",
     "t_adj_close": "命中日收盘价(后复权)",
     "prev_close_raw": "前一交易日收盘价(不复权)",
+    "prev_adj_close": "前一交易日收盘价(后复权)",
     "rise_ref_adj_close": "涨幅基准日收盘价(后复权)",
     "t1_open_raw": "次日开盘价(不复权)",
+    "t1_close_raw": "次日收盘价(不复权)",
     "t1_pre_close_raw": "次日昨收价(除权后)",
     "t1_adj_open": "次日开盘价(后复权)",
+    "t1_adj_close": "次日收盘价(后复权)",
+    "t1_intraday_ret": "次日日内涨幅",
+    "t1_intraday_ret_pct": "次日日内涨幅(%)",
     "entry_gap": "次日开盘低开幅度",
     "entry_gap_close_raw": "次日开盘低开幅度(对T日收盘)",
     "passed_entry_gap": "是否满足次日低开条件",
@@ -121,6 +157,9 @@ CSV_COLUMN_NAMES: dict[str, str] = {
     "t2_open_ret_raw": "次次日开盘收益(不复权)",
     "t2_high_ret_raw": "次次日最高收益(不复权)",
     "t2_close_ret_raw": "次次日收盘收益(不复权)",
+    "exit_threshold": "动态止盈阈值",
+    "exit_threshold_pct": "动态止盈阈值(%)",
+    "exit_tier": "止盈区间",
     "exit_at_open": "是否开盘卖出",
     "exit_intraday": "是否盘中止盈",
     "return_adj": "收益率(后复权)",
@@ -131,6 +170,7 @@ CSV_COLUMN_NAMES: dict[str, str] = {
     "passed_gap": "是否满足高开条件",
     "passed_close": "是否满足收盘涨跌幅条件",
     "passed_rise": "是否满足涨幅条件",
+    "passed_low_support": "是否满足最低价不破昨收",
     "included": "是否纳入统计",
     "gap_open_pct": "高开幅度(%)",
     "gap_open_prev_raw_pct": "高开幅度(对前一日原始收盘,%)",
@@ -192,10 +232,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help=f"涨幅回看交易日数，默认 {DEFAULT_RISE_DAYS}",
     )
     parser.add_argument(
+        "--exit-tiers",
+        default=None,
+        help=(
+            "动态止盈分档 JSON：[[下界, 上界, 止盈率], ...]，区间左开右闭，"
+            "下界/上界为 null 表示 -∞/+∞（首段下界、末段上界必须是 null）；"
+            f"默认 {json.dumps(tiers_to_jsonable(DEFAULT_EXIT_TIERS), ensure_ascii=False)}"
+        ),
+    )
+    parser.add_argument(
         "--open-exit",
         type=float,
-        default=DEFAULT_OPEN_EXIT,
-        help=f"T+2 开盘涨幅超过该值时按开盘卖出；否则盘中最高价触及该值时按该值止盈，默认 {DEFAULT_OPEN_EXIT}",
+        default=None,
+        help="固定止盈阈值（退化为单段分档，覆盖全部日涨幅）；与 --exit-tiers 互斥；缺省用动态分档",
     )
     parser.add_argument(
         "--entry-gap",
@@ -204,6 +253,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_ENTRY_GAP,
         metavar=("MIN", "MAX"),
         help=f"T+1 买入低开闭区间（小数），默认 {DEFAULT_ENTRY_GAP}，要求 MIN <= gap <= MAX",
+    )
+    parser.add_argument(
+        "--require-low-support",
+        action=argparse.BooleanOptionalAction,
+        default=DEFAULT_REQUIRE_LOW_SUPPORT,
+        help=(
+            "是否要求信号日最低价 >= 前一交易日收盘价（后复权 low(T) / close(T-1)），"
+            f"默认 {'要求' if DEFAULT_REQUIRE_LOW_SUPPORT else '不要求'}；"
+            "用 --no-require-low-support 显式关闭"
+        ),
     )
     parser.add_argument(
         "--report",
@@ -222,6 +281,23 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-dir", default="outputs", help="报告输出根目录，默认 outputs"
     )
     return parser.parse_args(argv)
+
+
+def resolve_exit_tiers(args: argparse.Namespace) -> tuple[tuple, str]:
+    """把 CLI 参数解析为止盈分档：--exit-tiers > --open-exit（固定单段） > 默认分档。"""
+    if args.exit_tiers is not None and args.open_exit is not None:
+        raise SystemExit("--exit-tiers 与 --open-exit 互斥，请只传其一")
+    if args.exit_tiers is not None:
+        try:
+            return parse_exit_tiers(args.exit_tiers), "命令行 --exit-tiers"
+        except ValueError as exc:
+            raise SystemExit(f"--exit-tiers 无效：{exc}") from exc
+    if args.open_exit is not None:
+        try:
+            return tiers_from_scalar(args.open_exit), "命令行 --open-exit（固定阈值）"
+        except ValueError as exc:
+            raise SystemExit(f"--open-exit 无效：{exc}") from exc
+    return DEFAULT_EXIT_TIERS, "默认 DEFAULT_EXIT_TIERS"
 
 
 def compact_date(value: str) -> str:
@@ -303,7 +379,7 @@ def load_prices(codes: list[str], min_date: str, max_date: str) -> pd.DataFrame:
         frames.append(
             db.read_df(
                 f"""
-                SELECT d.ts_code, d.trade_date, d.open, d.high, d.close,
+                SELECT d.ts_code, d.trade_date, d.open, d.high, d.low, d.close,
                        d.pre_close, a.adj_factor, l.down_limit
                 FROM daily d
                 LEFT JOIN adj_factor a
@@ -319,10 +395,19 @@ def load_prices(codes: list[str], min_date: str, max_date: str) -> pd.DataFrame:
     prices = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
     if prices.empty:
         return prices
-    for col in ("open", "high", "close", "pre_close", "adj_factor", "down_limit"):
+    for col in (
+        "open",
+        "high",
+        "low",
+        "close",
+        "pre_close",
+        "adj_factor",
+        "down_limit",
+    ):
         prices[col] = pd.to_numeric(prices[col], errors="coerce")
     prices["adj_open"] = prices["open"] * prices["adj_factor"]
     prices["adj_high"] = prices["high"] * prices["adj_factor"]
+    prices["adj_low"] = prices["low"] * prices["adj_factor"]
     prices["adj_close"] = prices["close"] * prices["adj_factor"]
     prices["trade_date"] = prices["trade_date"].astype(str)
     prices["ts_code"] = prices["ts_code"].astype(str)
@@ -345,8 +430,9 @@ def build_samples(
     close_chg_range: tuple[float, float],
     rise_range: tuple[float, float],
     rise_days: int,
-    open_exit_threshold: float,
+    exit_tiers: tuple,
     entry_gap_range: tuple[float, float],
+    require_low_support: bool = False,
 ) -> pd.DataFrame:
     samples = _merge_role(
         hits,
@@ -357,10 +443,16 @@ def build_samples(
             "close": "t_close_raw",
             "pre_close": "t_pre_close_raw",
             "adj_open": "t_adj_open",
+            "adj_low": "t_adj_low",
             "adj_close": "t_adj_close",
         },
     )
-    samples = _merge_role(samples, prices, "prev_date", {"close": "prev_close_raw"})
+    samples = _merge_role(
+        samples,
+        prices,
+        "prev_date",
+        {"close": "prev_close_raw", "adj_close": "prev_adj_close"},
+    )
     samples = _merge_role(
         samples, prices, "rise_ref_date", {"adj_close": "rise_ref_adj_close"}
     )
@@ -370,8 +462,10 @@ def build_samples(
         "t1_date",
         {
             "open": "t1_open_raw",
+            "close": "t1_close_raw",
             "pre_close": "t1_pre_close_raw",
             "adj_open": "t1_adj_open",
+            "adj_close": "t1_adj_close",
         },
     )
     samples = _merge_role(
@@ -401,20 +495,35 @@ def build_samples(
         samples["t1_open_raw"] / samples["t_close_raw"] - 1.0
     )
     samples["ret_rise"] = samples["t_adj_close"] / samples["rise_ref_adj_close"] - 1.0
+    # T+1 日内涨幅：同一交易日内 close/open 比值，不受除权影响（复权因子同日相同）
+    samples["t1_intraday_ret"] = samples["t1_close_raw"] / samples["t1_open_raw"] - 1.0
+    # 逐样本动态止盈阈值：按 T+1 日内涨幅分档；缺失/无效为 NaN
+    samples["exit_threshold"] = apply_exit_thresholds(
+        samples["t1_intraday_ret"], exit_tiers
+    )
+    samples["exit_tier"] = pd.Categorical.from_codes(
+        apply_exit_tier_codes(samples["t1_intraday_ret"], exit_tiers).to_numpy(),
+        categories=list(tier_labels(exit_tiers)),
+        ordered=True,
+    )
     samples["t2_open_ret"] = samples["t2_adj_open"] / samples["t1_adj_open"] - 1.0
     samples["t2_high_ret"] = samples["t2_adj_high"] / samples["t1_adj_open"] - 1.0
     samples["t2_close_ret"] = samples["t2_adj_close"] / samples["t1_adj_open"] - 1.0
     samples["t2_open_ret_raw"] = samples["t2_open_raw"] / samples["t1_open_raw"] - 1.0
     samples["t2_high_ret_raw"] = samples["t2_high_raw"] / samples["t1_open_raw"] - 1.0
     samples["t2_close_ret_raw"] = samples["t2_close_raw"] / samples["t1_open_raw"] - 1.0
-    samples["exit_at_open"] = samples["t2_open_ret"].gt(open_exit_threshold)
+    samples["exit_at_open"] = samples["t2_open_ret"].gt(samples["exit_threshold"])
     samples["exit_intraday"] = ~samples["exit_at_open"] & samples["t2_high_ret"].ge(
-        open_exit_threshold
+        samples["exit_threshold"]
     )
     samples["return_adj"] = samples["t2_close_ret"]
     samples["return_raw"] = samples["t2_close_ret_raw"]
-    samples.loc[samples["exit_intraday"], "return_adj"] = open_exit_threshold
-    samples.loc[samples["exit_intraday"], "return_raw"] = open_exit_threshold
+    samples.loc[samples["exit_intraday"], "return_adj"] = samples.loc[
+        samples["exit_intraday"], "exit_threshold"
+    ]
+    samples.loc[samples["exit_intraday"], "return_raw"] = samples.loc[
+        samples["exit_intraday"], "exit_threshold"
+    ]
     samples.loc[samples["exit_at_open"], "return_adj"] = samples.loc[
         samples["exit_at_open"], "t2_open_ret"
     ]
@@ -425,6 +534,10 @@ def build_samples(
     missing_high = ~samples["exit_at_open"] & samples["t2_high_ret"].isna()
     samples.loc[missing_high, "return_adj"] = np.nan
     samples.loc[missing_high, "return_raw"] = np.nan
+    # T+1 收盘价缺失（或日内涨幅无效）时无法分档，止盈阈值不可确定，按缺失处理。
+    no_threshold = samples["exit_threshold"].isna()
+    samples.loc[no_threshold, "return_adj"] = np.nan
+    samples.loc[no_threshold, "return_raw"] = np.nan
 
     samples["exit_type"] = "T+2 收盘"
     samples.loc[samples["exit_intraday"], "exit_type"] = "T+2 盘中"
@@ -447,6 +560,8 @@ def build_samples(
         "entry_gap",
         "entry_gap_close_raw",
         "ret_rise",
+        "t1_intraday_ret",
+        "exit_threshold",
         "t2_open_ret",
         "t2_high_ret",
         "t2_close_ret",
@@ -476,13 +591,17 @@ def build_samples(
     samples["passed_entry_gap"] = samples["entry_gap"].ge(entry_lo - GAP_EPS) & samples[
         "entry_gap"
     ].le(entry_hi + GAP_EPS)
-    samples["included"] = (
+    # 可选条件：信号日最低价（后复权）不低于前一交易日收盘价（后复权）。
+    samples["passed_low_support"] = samples["t_adj_low"].ge(samples["prev_adj_close"])
+    included_mask = (
         samples["passed_gap"]
         & samples["passed_close"]
         & samples["passed_rise"]
         & samples["passed_entry_gap"]
-        & samples["return_adj"].notna()
     )
+    if require_low_support:
+        included_mask &= samples["passed_low_support"]
+    samples["included"] = included_mask & samples["return_adj"].notna()
 
     for src, dst in (
         ("gap_open", "gap_open_pct"),
@@ -491,6 +610,8 @@ def build_samples(
         ("entry_gap", "entry_gap_pct"),
         ("entry_gap_close_raw", "entry_gap_close_raw_pct"),
         ("ret_rise", "ret_rise_pct"),
+        ("t1_intraday_ret", "t1_intraday_ret_pct"),
+        ("exit_threshold", "exit_threshold_pct"),
         ("t2_open_ret", "t2_open_ret_pct"),
         ("t2_high_ret", "t2_high_ret_pct"),
         ("t2_close_ret", "t2_close_ret_pct"),
@@ -521,12 +642,14 @@ def build_samples(
 
     samples["gap_bucket"] = samples["gap_open"].map(gap_bucket)
     samples["exclusion_reason"] = samples.apply(
-        lambda row: _exclusion_reason(row, rise_days), axis=1
+        lambda row: _exclusion_reason(row, rise_days, require_low_support), axis=1
     )
     return samples
 
 
-def _exclusion_reason(row: pd.Series, rise_days: int) -> str:
+def _exclusion_reason(
+    row: pd.Series, rise_days: int, require_low_support: bool = False
+) -> str:
     if bool(row["included"]):
         return ""
     reasons: list[str] = []
@@ -540,6 +663,8 @@ def _exclusion_reason(row: pd.Series, rise_days: int) -> str:
         reasons.append("缺少T日收盘价或交易所昨收")
     elif not bool(row["passed_close"]):
         reasons.append("T日收盘涨跌幅不在区间")
+    if require_low_support and not bool(row["passed_low_support"]):
+        reasons.append("T日最低价低于前一交易日收盘价")
     if pd.isna(row["rise_ref_date"]):
         reasons.append(f"命中日前不足{rise_days}个交易日")
     elif pd.isna(row["ret_rise"]):
@@ -552,6 +677,8 @@ def _exclusion_reason(row: pd.Series, rise_days: int) -> str:
         reasons.append("T+1开盘不在区间")
     if pd.isna(row["t1_date"]) or pd.isna(row["t2_date"]):
         reasons.append("缺少T+1/T+2交易日")
+    elif pd.isna(row["exit_threshold"]):
+        reasons.append("缺少T+1收盘价，无法确定止盈档位")
     elif pd.isna(row["return_adj"]):
         if not bool(row["exit_at_open"]) and pd.isna(row["t2_high_ret"]):
             reasons.append("缺少T+2最高价，无法判断盘中止盈")
@@ -716,6 +843,8 @@ def build_report(
     stats: dict[str, float | int | None],
     yearly: pd.DataFrame,
     gap_stats: pd.DataFrame,
+    tier_stats: pd.DataFrame,
+    exit_tiers: tuple,
     args: argparse.Namespace,
     start: str,
     end: str,
@@ -726,19 +855,18 @@ def build_report(
     total = len(samples)
     gap_ok = int(samples["passed_gap"].sum())
     close_ok = int(samples["passed_close"].sum())
+    low_ok = int(samples["passed_low_support"].sum())
     rise_ok = int(samples["passed_rise"].sum())
-    t_day_ok = int(
-        (samples["passed_gap"] & samples["passed_close"] & samples["passed_rise"]).sum()
+    t_day_mask = (
+        samples["passed_gap"] & samples["passed_close"] & samples["passed_rise"]
     )
+    if args.require_low_support:
+        t_day_mask &= samples["passed_low_support"]
+    t_day_ok = int(t_day_mask.sum())
     entry_ok = int(samples["passed_entry_gap"].sum())
-    all_ok = int(
-        (
-            samples["passed_gap"]
-            & samples["passed_close"]
-            & samples["passed_rise"]
-            & samples["passed_entry_gap"]
-        ).sum()
-    )
+    all_ok = int((t_day_mask & samples["passed_entry_gap"]).sum())
+    t_conditions = 3 + int(args.require_low_support)
+    n_conditions = t_conditions + 1
     n_included = int(samples["included"].sum())
     n_sell_limit_down = int(included["sell_limit_down"].sum()) if n_included else 0
     n_sell_limit_down_missing = (
@@ -748,6 +876,7 @@ def build_report(
     missing_rise = int(samples["ret_rise"].isna().sum())
     missing_gap = int(samples["gap_open"].isna().sum())
     missing_close = int(samples["close_chg"].isna().sum())
+    missing_t1_close = int(samples["t1_intraday_ret"].isna().sum())
 
     funnel = [
         {"阶段": "命中样本总数", "样本数": total, "说明": "hit_limit_up_shakeout"},
@@ -761,33 +890,51 @@ def build_report(
             "样本数": close_ok,
             "说明": "raw_close / raw_pre_close - 1",
         },
-        {
-            "阶段": f"近{args.rise_days}日涨幅 ∈ {fmt_range(args.rise)}",
-            "样本数": rise_ok,
-            "说明": "后复权收盘价",
-        },
-        {
-            "阶段": "T日三项同时满足",
-            "样本数": t_day_ok,
-            "说明": "高开+收盘涨跌幅+近N日涨幅",
-        },
-        {
-            "阶段": f"T+1开盘 ∈ {fmt_range(args.entry_gap)}",
-            "样本数": entry_ok,
-            "说明": "raw_open(T+1)/raw_pre_close(T+1)-1",
-        },
-        {"阶段": "四项同时满足", "样本数": all_ok, "说明": "尚未要求T+1/T+2行情完整"},
-        {
-            "阶段": "最终纳入收益统计",
-            "样本数": n_included,
-            "说明": "且T+1开盘、T+2行情可计算",
-        },
-        {
-            "阶段": "四项满足但缺T+1/T+2行情",
-            "样本数": all_ok - n_included,
-            "说明": "停牌或行情尚未产生",
-        },
     ]
+    if args.require_low_support:
+        funnel.append(
+            {
+                "阶段": "T日最低价 >= 前一日收盘价",
+                "样本数": low_ok,
+                "说明": "后复权 low(T) / close(T-1)",
+            }
+        )
+    funnel.extend(
+        [
+            {
+                "阶段": f"近{args.rise_days}日涨幅 ∈ {fmt_range(args.rise)}",
+                "样本数": rise_ok,
+                "说明": "后复权收盘价",
+            },
+            {
+                "阶段": f"T日{t_conditions}项同时满足",
+                "样本数": t_day_ok,
+                "说明": "高开+收盘涨跌幅+"
+                + ("最低价+" if args.require_low_support else "")
+                + "近N日涨幅",
+            },
+            {
+                "阶段": f"T+1开盘 ∈ {fmt_range(args.entry_gap)}",
+                "样本数": entry_ok,
+                "说明": "raw_open(T+1)/raw_pre_close(T+1)-1",
+            },
+            {
+                "阶段": f"{n_conditions}项同时满足",
+                "样本数": all_ok,
+                "说明": "尚未要求T+1/T+2行情完整",
+            },
+            {
+                "阶段": "最终纳入收益统计",
+                "样本数": n_included,
+                "说明": "且T+1开盘/收盘、T+2行情可计算",
+            },
+            {
+                "阶段": f"{n_conditions}项满足但缺T+1/T+2行情",
+                "样本数": all_ok - n_included,
+                "说明": "停牌或行情尚未产生",
+            },
+        ]
+    )
     coverage = [
         {"项目": "缺T日开盘/昨收", "样本数": missing_gap, "说明": "无法计算高开"},
         {
@@ -799,6 +946,11 @@ def build_report(
             "项目": f"缺T-{args.rise_days}行情",
             "样本数": missing_rise,
             "说明": "无法计算近N日涨幅",
+        },
+        {
+            "项目": "缺T+1收盘价",
+            "样本数": missing_t1_close,
+            "说明": "无法计算日内涨幅并分档",
         },
         {
             "项目": "缺T+1/T+2行情",
@@ -864,6 +1016,29 @@ def build_report(
             }
         )
 
+    tier_rate_map = dict(zip(tier_labels(exit_tiers), (t[2] for t in exit_tiers)))
+    tier_table_rows = [
+        {
+            "T+1 日内涨幅": label,
+            "止盈阈值": fmt_pct(rate),
+        }
+        for label, (_lo, _hi, rate) in zip(tier_labels(exit_tiers), exit_tiers)
+    ]
+    tier_rows = []
+    for row in tier_stats.itertuples(index=False):
+        tier_rows.append(
+            {
+                "止盈区间": row.分组,
+                "止盈阈值": fmt_pct(tier_rate_map.get(row.分组)),
+                "样本数": row.样本数,
+                "平均": fmt_pct(row.平均收益率),
+                "中位数": fmt_pct(row.中位数),
+                "胜率": fmt_pct(row.胜率, signed=False),
+                "最小": fmt_pct(row.最小收益率),
+                "最大": fmt_pct(row.最大收益率),
+            }
+        )
+
     exit_rows = []
     if n_included:
         for exit_type in ("T+2 开盘", "T+2 盘中", "T+2 收盘"):
@@ -913,9 +1088,14 @@ def build_report(
         f"- T 日收盘涨跌幅区间：`{fmt_range(args.close_chg)}`（闭区间；`raw_close / raw_pre_close - 1`）",
         f"- 近 {args.rise_days} 日涨幅区间：`{fmt_range(args.rise)}`（闭区间，窗口含 T 日；`后复权 close(T) / close(T-{args.rise_days}) - 1`）",
         f"- T+1 买入低开区间：`{fmt_range(args.entry_gap)}`（闭区间；`raw_open(T+1) / raw_pre_close(T+1) - 1`；普通交易日等于 `open(T+1)/close(T) - 1`）",
-        "- 卖出规则（后复权）：",
-        f"  - T+2 开盘 / T+1 开盘 - 1 > `{fmt_pct(args.open_exit, signed=False)}`：按 T+2 开盘卖出；",
-        f"  - 否则 T+2 最高价 / T+1 开盘 - 1 >= `{fmt_pct(args.open_exit, signed=False)}`：按 `{fmt_pct(args.open_exit, signed=False)}` 止盈；",
+        f"- 信号日最低价条件：{'要求' if args.require_low_support else '不要求'}（后复权 `low(T) >= close(T-1)`）",
+        "- 卖出规则（后复权；逐样本动态止盈）：",
+        "  - T+1 日内涨幅 = `close(T+1) / open(T+1) - 1`，按下表分档确定止盈阈值（区间左开右闭，止盈率可为负即止损）：",
+        "",
+        md_table(tier_table_rows, ["T+1 日内涨幅", "止盈阈值"]),
+        "",
+        "  - T+2 开盘 / T+1 开盘 - 1 > 该档止盈阈值：按 T+2 开盘卖出（开盘已高于目标价，以开盘价成交）；",
+        "  - 否则 T+2 最高价 / T+1 开盘 - 1 >= 该档止盈阈值：按该止盈阈值卖出；",
         "  - 否则持有到 T+2 收盘卖出。",
         "- 买入：T+1 开盘",
         "- 收益率：卖出价 / T+1 后复权开盘 - 1（盘中止盈按阈值计）",
@@ -935,7 +1115,7 @@ def build_report(
         "",
         md_table(funnel, ["阶段", "样本数", "说明"]),
         "",
-        "> 第 2、3、4、6 行为单项条件；其余为组合/逐级筛选。最后一行是四项都满足但无法计算前向收益的样本。区间条件均为闭区间，恰好等于边界也算满足。",
+        "> 各单项条件为独立统计；其余为组合/逐级筛选（可选的最低价条件仅在开启时计入组合）。最后一行是全部条件满足但无法计算前向收益的样本。区间条件均为闭区间，恰好等于边界也算满足。",
         "",
         "## 数据覆盖（全部命中样本）",
         "",
@@ -966,6 +1146,13 @@ def build_report(
         "",
         md_table(
             gap_rows, ["高开区间", "样本数", "平均", "中位数", "胜率", "最小", "最大"]
+        ),
+        "",
+        "## 按止盈区间分组（按 T+1 日内涨幅分档）",
+        "",
+        md_table(
+            tier_rows,
+            ["止盈区间", "止盈阈值", "样本数", "平均", "中位数", "胜率", "最小", "最大"],
         ),
         "",
         "## 最佳 / 最差样本",
@@ -1022,11 +1209,13 @@ def build_report(
             "",
             "- 高开用不复权 `raw_open / raw_pre_close - 1`。`raw_pre_close` 是交易所除权后的昨收，避免分红/送转造成假高开；普通交易日它与前一日原始收盘价相同。",
             "- T 日收盘涨跌幅用不复权 `raw_close / raw_pre_close - 1`，与高开使用同一昨收口径。",
+            "- 可选的最低价条件用后复权 `low(T) >= close(T-1)`，默认不要求；开启后可复现早期“最低价不破昨收”口径。",
             "- T+1 买入低开用 `raw_open(T+1) / raw_pre_close(T+1) - 1`。`raw_pre_close(T+1)` 是交易所除权后的 T 日收盘，普通交易日等于 `close(T)`；CSV 同时保留直接对 T 日原始收盘的 `entry_gap_close_raw` 供核对。",
             "- 近 N 日涨幅和买卖收益用后复权价，等价于分红再投资；CSV 里同时保留“收益率(不复权)”列供核对。",
-            "- 卖出规则：T+2 开盘涨幅超过阈值时按开盘卖；否则用 T+2 最高价判断盘中是否触及阈值，触及则按阈值止盈；否则持有到收盘。",
-            "- 盘中止盈假设能在阈值价格精确成交，未考虑滑点、盘中路径和涨跌停无法成交的情况。",
-            "- 「T+2 开盘」「T+2 盘中」组胜率 100% 是规则触发的结果，不代表该组选股能力更强。",
+            "- T+1 日内涨幅用不复权 `close(T+1) / open(T+1) - 1`（同一交易日内的比值，不受复权影响）。",
+            "- 卖出规则：先按 T+1 日内涨幅分档得到逐样本止盈阈值；T+2 开盘涨幅超过阈值时按开盘卖；否则用 T+2 最高价判断盘中是否触及阈值，触及则按阈值止盈；否则持有到收盘。",
+            "- 盘中止盈假设能在阈值价格精确成交，未考虑滑点、盘中路径和涨跌停无法成交的情况；负阈值（止损档）同理，按目标价精确成交估计。",
+            "- 「T+2 开盘」「T+2 盘中」组的表现是规则触发的结果，不代表该组选股能力更强。",
             "- T+1、T+2 按 SSE 交易日历定位。个股在 T+1/T+2 停牌或行情尚未产生时，该样本不纳入收益统计。",
             "- 未考虑 T+1 开盘涨停买不进、跌停卖不出、涨跌停板成交限制、交易费用和滑点；这是理论开盘价/收盘价下的样本级分布。",
             "- 卖出日跌停统计按 T+2 收盘价对 `stk_limit.down_limit` 判断，只做备注，不改变任何收益计算。",
@@ -1048,6 +1237,7 @@ def build_report(
             "- `summary.csv`：收益分布指标",
             "- `yearly_stats.csv`：分年统计",
             "- `gap_bucket_stats.csv`：按高开幅度分组统计",
+            "- `exit_tier_stats.csv`：按止盈区间（T+1 日内涨幅分档）分组统计",
             "- `run_meta.json`：运行参数和样本数",
             "- `return_distribution.png`：收益分布图（有样本时生成）",
             "",
@@ -1058,6 +1248,8 @@ def build_report(
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
+    # 止盈分档先解析校验（错误早暴露，不等到查库之后）
+    exit_tiers, tiers_source = resolve_exit_tiers(args)
     start = compact_date(args.start)
     if args.end is None or str(args.end).strip().lower() in ("", "latest", "none"):
         max_hit = db.scalar("SELECT MAX(trade_date) FROM hit_limit_up_shakeout")
@@ -1088,15 +1280,14 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  T日收盘涨跌幅：{fmt_range(args.close_chg)}（闭区间）")
     print(f"  近{args.rise_days}日涨幅：{fmt_range(args.rise)}（闭区间）")
     print(f"  T+1买入低开：{fmt_range(args.entry_gap)}（闭区间）")
+    print(
+        f"  T日最低价>=前一日收盘：{'要求' if args.require_low_support else '不要求'}"
+    )
     print("  买入时点：T+1 开盘")
-    print(
-        f"  止盈规则：T+2 开盘相对 T+1 开盘涨幅 > "
-        f"{fmt_pct(args.open_exit, signed=False)} 按 T+2 开盘卖出；"
-    )
-    print(
-        f"            否则 T+2 最高价触及 {fmt_pct(args.open_exit, signed=False)} "
-        f"按 {fmt_pct(args.open_exit, signed=False)} 止盈；否则 T+2 收盘卖出"
-    )
+    print("  止盈规则：按 T+1 日内涨幅（收盘/开盘-1，左开右闭）分档确定逐样本止盈阈值")
+    print(f"    {format_tiers_summary(exit_tiers)}")
+    print(f"    分档来源：{tiers_source}")
+    print("    T+2 开盘高于目标价按开盘卖出；盘中触及目标价按目标价卖出；否则 T+2 收盘卖出")
     print("  费用口径：未扣手续费、印花税、滑点")
     print(f"  生成报告：{'是' if args.generate_report else '否'}")
     print("-" * 90)
@@ -1138,13 +1329,15 @@ def main(argv: list[str] | None = None) -> int:
         args.close_chg,
         args.rise,
         args.rise_days,
-        args.open_exit,
+        exit_tiers,
         args.entry_gap,
+        require_low_support=args.require_low_support,
     )
     included = samples[samples["included"]].copy()
     stats = distribution_stats(included["return_adj"])
     yearly = grouped_stats(included, "year")
     gap_stats = grouped_stats(included, "gap_bucket")
+    tier_stats = grouped_stats(included, "exit_tier")
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     run_dir: Path | None = None
@@ -1180,6 +1373,9 @@ def main(argv: list[str] | None = None) -> int:
         gap_stats.rename(columns={"分组": "高开区间"}).to_csv(
             run_dir / "gap_bucket_stats.csv", index=False, encoding="utf-8-sig"
         )
+        tier_stats.rename(columns={"分组": "止盈区间"}).to_csv(
+            run_dir / "exit_tier_stats.csv", index=False, encoding="utf-8-sig"
+        )
 
         plot_created = write_plot(included, run_dir / "return_distribution.png")
 
@@ -1193,12 +1389,15 @@ def main(argv: list[str] | None = None) -> int:
             "close_chg_range": list(args.close_chg),
             "rise_range": list(args.rise),
             "rise_days": args.rise_days,
-            "open_exit_threshold": args.open_exit,
+            "exit_tiers": tiers_to_jsonable(exit_tiers),
+            "exit_tiers_source": tiers_source,
             "entry_gap_range": list(args.entry_gap),
+            "require_low_support": args.require_low_support,
             "hit_samples": len(samples),
             "passed_gap": int(samples["passed_gap"].sum()),
             "passed_close": int(samples["passed_close"].sum()),
             "passed_rise": int(samples["passed_rise"].sum()),
+            "passed_low_support": int(samples["passed_low_support"].sum()),
             "included_samples": len(included),
             "open_exit_samples": int(included["exit_at_open"].sum())
             if len(included)
@@ -1230,6 +1429,8 @@ def main(argv: list[str] | None = None) -> int:
             stats,
             yearly,
             gap_stats,
+            tier_stats,
+            exit_tiers,
             args,
             start,
             end,
