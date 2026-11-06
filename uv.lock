@@ -74,18 +74,6 @@ wheels = [
 ]
 
 [[package]]
-name = "baostock"
-version = "0.9.4"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "pandas" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/66/61/8ad575eb83d4b22852a922e669bc13c9723675343e885b0040ab11a6a321/baostock-0.9.4.tar.gz", hash = "sha256:54dd26ec53100da02dcd47a21fc487ed5b2e12a4124af7961143d8ca0bc682e9", size = 28131 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/56/df/6984deaa036cc3467f85411d01a48018eb86ed7477e74f33aa5b012ace05/baostock-0.9.4-py3-none-any.whl", hash = "sha256:0bf71c6069ab5890ff3596632f9c3f8f1fbc6bfcac582c2f9d6a5c11ab2cfaf8", size = 52424 },
-]
-
-[[package]]
 name = "beautifulsoup4"
 version = "4.15.0"
 source = { registry = "https://pypi.org/simple" }
@@ -945,7 +933,6 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "akshare" },
-    { name = "baostock" },
     { name = "lark-oapi" },
     { name = "matplotlib" },
     { name = "numpy" },
@@ -967,7 +954,6 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "akshare", specifier = ">=1.20.21" },
-    { name = "baostock", specifier = ">=0.9.4" },
     { name = "lark-oapi", specifier = ">=1.7.3" },
     { name = "matplotlib", specifier = ">=3.8" },
     { name = "numpy", specifier = ">=1.26" },

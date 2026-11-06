@@ -22,7 +22,7 @@
 - `src/quant/data/schemas.py` 是表注册表：`TABLES`（入库表）、`HIT_TABLES`（由 `HIT_STRATEGIES` 派生）、`LIMIT_TABLES`（涨跌停派生表）。`quant data init-db` 幂等。已有表加列需要在 `MIGRATIONS`/`WIDENINGS`（hit 表用 `HIT_ADDED_COLUMNS`）登记；新增源表需要 `ingest.SPECS` 条目；否则现有库或 `data update` 会漏掉。
 - `tmp_scripts/` 已纳入版本管理（`scripts/` 仍被 gitignore）；持久逻辑仍应放在 `src/quant`。重建 CLI 逻辑在 `maintenance.py`（`parse_rebuild_args` / `run_rebuild_cli`），报告辅助函数在 `engine/`；`tests/test_rebuild_script.py`、`tests/test_idea_backtest_report.py`、`tests/test_multi_strategy_report.py` 只测库函数，不依赖本地 `tmp_scripts/`，全新克隆也能通过。
 - 每日盘后定时任务：Windows 任务 `MyAStockQuant_DailyUpdate` 在周一至周五 17:30 执行 `tmp_scripts/daily_update_task.cmd` -> `tmp_scripts/daily_update.py`，依次做行情更新、命中表更新、涨跌停表更新、状态校验和默认 `notify`（3 张卡）；非交易日跳过推送，日志在 `logs/daily_update.log`。
-- `daily.high/low` 以 Tushare `daily` 为准；日常更新和 `notify` 都不使用 BaoStock。`rebuild_daily_high_low.py` 只是独立实验脚本，不要挂到日常任务，也不要用它覆盖 `daily.high/low`。
+- `daily.high/low` 以 Tushare `daily` 为准。
 
 ## 策略与命中表
 
