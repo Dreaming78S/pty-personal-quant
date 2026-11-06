@@ -7,17 +7,26 @@
 规则：
 - 每个样本最多投入 DEFAULT_POSITION（默认 10 万元）；
 - 按 100 股一手计算，默认不超过预算，取最大整数手；
-- 买入价：T+1 不复权开盘价；
+- 买入（--delta，单位百分点，默认 DEFAULT_DELTA；按当前运行的 delta 重新判定，不沿用样本文件口径）：
+  a = open(T+1)/close(T) - 1（不复权高开比例，a<0 即低开），
+  买入基准价 = (1 + a - delta%) × close(T)，等价于 open(T+1) - delta% × close(T)；
+  0. delta=0：基准价即 T+1 不复权开盘价（原规则），直接成交；
+  1. delta>0：视为开盘下方 delta% 的限价单，T+1 不复权最低价 <= 基准价才成交
+     （按基准价成交），日内未触及则买入失败、该样本不交易；
+  实际买入价 = 基准价 × (1 + 滑点)；
 - 卖出规则（逐样本动态止盈，按当前运行的分档参数重新判定，不沿用样本文件的“卖出方式”）：
-  0. T+1 日内涨幅 = close(T+1)/open(T+1)-1，按分档（默认
+  0. T+1 收盘对买入价涨幅 = close(T+1)/买入基准价-1（delta=0 时即原日内涨幅
+     close(T+1)/open(T+1)-1），按分档（默认
      quant.engine.exit_tiers.DEFAULT_EXIT_TIERS）确定止盈阈值，负阈值即止损；
-  1. T+2 开盘价高于 open(T+1)×(1+阈值)：按 T+2 开盘价卖出；
+  1. T+2 开盘价高于 买入基准价×(1+阈值)：按 T+2 开盘价卖出；
   2. 否则 T+2 最高价触及该目标价：按目标价卖出；
   3. 否则 T+2 收盘卖出；
 - 若“T+2 收盘卖出”且 T+2 收盘跌停，则视为尾盘卖不出去，
   顺延到下一个交易日开盘；若开盘仍跌停，继续顺延，最多 DEFAULT_MAX_DELAY_DAYS 个交易日。
 - 样本文件缺少 T+1 收盘价列时（旧版文件），按 (代码, 买入日) 批量补查数据库；
   仍缺失则该样本无法分档、不交易。退化的单段分档（--open-exit 固定阈值）不需要 T+1 收盘价。
+- delta>0 时样本文件缺少 T 日收盘价 / T+1 最低价列同样按 (代码, 日期) 批量补查；
+  仍缺失则无法计算限价或判定成交，该样本不交易。
 - 数据库实时筛选时，可用 --require-low-support 要求信号日最低价 >= 前一日收盘价（默认不要求）。
 - 手续费：
   - 佣金：默认 0.025%，最低 5 元；
@@ -33,6 +42,8 @@
     uv run python tmp_scripts/limitup_shakeout_cash_returns.py --report-dir outputs/limitup_shakeout_filtered_returns_20261102_224640
     uv run python tmp_scripts/limitup_shakeout_cash_returns.py --samples-csv outputs/.../included_samples.csv --position 50000
     uv run python tmp_scripts/limitup_shakeout_cash_returns.py --lot-mode floor --slippage 0.001
+    uv run python tmp_scripts/limitup_shakeout_cash_returns.py --delta 0        # 原规则：T+1 开盘价买入
+    uv run python tmp_scripts/limitup_shakeout_cash_returns.py --delta 1.5 --report   # 开盘下方 1.5% 限价买入
     uv run python tmp_scripts/limitup_shakeout_cash_returns.py --require-low-support --report
 """
 
@@ -69,7 +80,7 @@ from quant.engine.exit_tiers import (  # noqa: E402
 
 # ==============================================================================
 # 筛选参数（默认走数据库实时筛选；指定 --samples-csv / --report-dir 时沿用已有样本文件）
-DEFAULT_START = "20181101"
+DEFAULT_START = "20221101"
 DEFAULT_END = "latest"
 
 DEFAULT_GAP = (0.00, 0.11)
@@ -81,8 +92,11 @@ DEFAULT_RISE = (-10, 10)
 # 止盈：按 T+1 日内涨幅（close(T+1)/open(T+1)-1）分段的动态止盈，左开右闭；
 # 默认分档是 quant.engine.exit_tiers.DEFAULT_EXIT_TIERS（一个变量概括整个分段函数），
 # 想改默认直接改那个变量；运行时可用 --exit-tiers 覆盖，或 --open-exit 退回固定阈值（单段）
-DEFAULT_ENTRY_GAP = (-0.05, 0)
+DEFAULT_ENTRY_GAP = (-0.06, 0)
 DEFAULT_REQUIRE_LOW_SUPPORT = True  # 是否要求信号日最低价 >= 前一日收盘价（后复权）
+# T+1 限价买入下探深度 delta（百分点）：买入基准价 = (1 + a - delta/100) × close(T)，
+# a = open(T+1)/close(T)-1（不复权）；0 = 开盘价买入（原规则），正数即开盘下方 delta%
+DEFAULT_DELTA = 0
 # ==============================================================================
 
 DEFAULT_POSITION = 100_000.0
@@ -93,7 +107,7 @@ DEFAULT_MIN_COMMISSION = 5.0
 DEFAULT_STAMP = 0.0005
 DEFAULT_TRANSFER = 0.00001
 DEFAULT_SLIPPAGE = 0.0
-DEFAULT_GENERATE_REPORT = True
+DEFAULT_GENERATE_REPORT = False
 LIMIT_EPS = 1e-6
 
 REQUIRED_COLUMNS = (
@@ -111,6 +125,18 @@ REQUIRED_COLUMNS = (
 # 可选列：旧版样本文件没有“次日收盘价(不复权)”，会按 (代码, 买入日) 批量补查数据库；
 # “卖出方式”“卖出日是否跌停”仅作参考/兜底，卖出分支一律按当前分档参数重新判定。
 OPTIONAL_T1_CLOSE_COLUMN = "次日收盘价(不复权)"
+# delta>0 的限价买入还需要 T 日收盘价与 T+1 最低价；旧版样本文件缺列时同样批量补查
+OPTIONAL_T_CLOSE_COLUMN = "命中日收盘价(不复权)"
+OPTIONAL_T1_LOW_COLUMN = "次日最低价(不复权)"
+
+# 买入失败类 exit_status（无持仓、不计入已实现统计）
+BUY_FAIL_STATUSES = (
+    "无T+1开盘价",
+    "无T日收盘价",
+    "无T+1最低价",
+    "限价未成交",
+    "买入价无效",
+)
 
 TRADE_CN = {
     "hit_date": "命中日期",
@@ -119,7 +145,7 @@ TRADE_CN = {
     "buy_date": "买入日",
     "plan_sell_date": "计划卖出日",
     "sell_date": "实际卖出日",
-    "t1_intraday_ret": "次日日内涨幅",
+    "t1_intraday_ret": "T+1收盘对买入价涨幅",
     "exit_threshold": "动态止盈阈值",
     "exit_tier": "止盈区间",
     "exit_mode": "卖出方式",
@@ -127,6 +153,7 @@ TRADE_CN = {
     "lot_mode": "手数取整方式",
     "lots": "手数",
     "shares": "股数",
+    "buy_base_raw": "买入基准价(不复权)",
     "buy_price_raw": "买入价(不复权,含滑点)",
     "sell_price_raw": "卖出价(不复权,含滑点)",
     "buy_amount": "买入金额",
@@ -203,6 +230,21 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_ENTRY_GAP,
         metavar=("MIN", "MAX"),
         help=f"T+1 买入低开闭区间（小数），默认 {DEFAULT_ENTRY_GAP}",
+    )
+    parser.add_argument(
+        "--delta",
+        type=float,
+        default=DEFAULT_DELTA,
+        metavar="PCT",
+        help=(
+            "T+1 限价买入下探深度（百分点，1.0 即 1%%）：买入基准价 = "
+            "(1 + a - delta%%) × close(T)，a = open(T+1)/close(T)-1（不复权）；"
+            "delta>0 时 T+1 最低价 <= 基准价才成交（按基准价成交），"
+            "日内未触及则该样本不交易；0 = 开盘价买入（原规则）；"
+            f"默认 {DEFAULT_DELTA:g}（即开盘下方 {DEFAULT_DELTA:g}%%）。"
+            "买入一律按当前 delta 重新判定（复用样本文件时样本集合仍受"
+            "生成时 delta 的成交筛选影响）"
+        ),
     )
     parser.add_argument(
         "--require-low-support",
@@ -386,26 +428,36 @@ def resolve_exit_tiers(args: argparse.Namespace, meta: dict) -> tuple[tuple, str
     return DEFAULT_EXIT_TIERS, "默认 DEFAULT_EXIT_TIERS"
 
 
-def fetch_t1_close(pairs: pd.DataFrame) -> dict[tuple[str, str], float]:
-    """按 (代码, 买入日) 批量补查 T+1 不复权收盘价，供旧版样本文件补列。"""
-    lookup: dict[tuple[str, str], float] = {}
+def fetch_daily_fields(
+    pairs: pd.DataFrame, date_column: str, fields: tuple[str, ...]
+) -> dict[tuple[str, str], dict[str, float]]:
+    """按 (代码, 日期) 批量补查 daily 表指定字段，供旧版样本文件补列。
+
+    pairs 需含「股票代码」与 date_column 两列；返回 {(代码, 日期): {字段: 值}}，
+    数据库无此行的键不在返回值中。
+    """
+    lookup: dict[tuple[str, str], dict[str, float]] = {}
     if pairs.empty:
         return lookup
     codes = sorted(pairs["股票代码"].astype(str).unique())
-    dates = sorted(pairs["次日日期"].astype(str).unique())
+    dates = sorted(pairs[date_column].astype(str).unique())
+    cols = ", ".join(fields)
     for i in range(0, len(codes), 500):
         chunk = codes[i : i + 500]
         code_ph = ",".join(["%s"] * len(chunk))
         date_ph = ",".join(["%s"] * len(dates))
         frame = db.read_df(
-            f"SELECT ts_code, trade_date, close FROM daily "
+            f"SELECT ts_code, trade_date, {cols} FROM daily "
             f"WHERE ts_code IN ({code_ph}) AND trade_date IN ({date_ph})",
             (*chunk, *dates),
         )
         if frame.empty:
             continue
         for row in frame.itertuples(index=False):
-            lookup[(str(row.ts_code), str(row.trade_date))] = float(row.close)
+            lookup[(str(row.ts_code), str(row.trade_date))] = {
+                field: pd.to_numeric(getattr(row, field), errors="coerce")
+                for field in fields
+            }
     return lookup
 
 
@@ -417,14 +469,46 @@ def ensure_t1_close(samples: pd.DataFrame, exit_tiers: tuple) -> pd.DataFrame:
     print(
         f"样本文件缺少 T+1 收盘价列，按 (代码, 买入日) 批量补查 {len(pairs):,} 组 ..."
     )
-    lookup = fetch_t1_close(pairs)
+    lookup = fetch_daily_fields(pairs, "次日日期", ("close",))
     samples = samples.copy()
     samples[OPTIONAL_T1_CLOSE_COLUMN] = [
-        lookup.get((str(code), str(date)), np.nan)
+        (lookup.get((str(code), str(date))) or {}).get("close", np.nan)
         for code, date in zip(samples["股票代码"], samples["次日日期"])
     ]
     filled = int(samples[OPTIONAL_T1_CLOSE_COLUMN].notna().sum())
     print(f"已补到 T+1 收盘价 {filled:,} / {len(samples):,} 条")
+    return samples
+
+
+def ensure_buy_inputs(samples: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
+    """delta>0 时补齐限价买入判定所需列（旧版样本文件缺列则批量补查数据库）。"""
+    if args.delta <= 0:
+        return samples
+    samples = samples.copy()
+    if OPTIONAL_T_CLOSE_COLUMN not in samples.columns:
+        pairs = samples[["股票代码", "命中日期"]].dropna().drop_duplicates()
+        print(
+            f"样本文件缺少 T 日收盘价列，按 (代码, 命中日) 批量补查 {len(pairs):,} 组 ..."
+        )
+        lookup = fetch_daily_fields(pairs, "命中日期", ("close",))
+        samples[OPTIONAL_T_CLOSE_COLUMN] = [
+            (lookup.get((str(code), str(date))) or {}).get("close", np.nan)
+            for code, date in zip(samples["股票代码"], samples["命中日期"])
+        ]
+        filled = int(samples[OPTIONAL_T_CLOSE_COLUMN].notna().sum())
+        print(f"已补到 T 日收盘价 {filled:,} / {len(samples):,} 条")
+    if OPTIONAL_T1_LOW_COLUMN not in samples.columns:
+        pairs = samples[["股票代码", "次日日期"]].dropna().drop_duplicates()
+        print(
+            f"样本文件缺少 T+1 最低价列，按 (代码, 买入日) 批量补查 {len(pairs):,} 组 ..."
+        )
+        lookup = fetch_daily_fields(pairs, "次日日期", ("low",))
+        samples[OPTIONAL_T1_LOW_COLUMN] = [
+            (lookup.get((str(code), str(date))) or {}).get("low", np.nan)
+            for code, date in zip(samples["股票代码"], samples["次日日期"])
+        ]
+        filled = int(samples[OPTIONAL_T1_LOW_COLUMN].notna().sum())
+        print(f"已补到 T+1 最低价 {filled:,} / {len(samples):,} 条")
     return samples
 
 
@@ -445,18 +529,21 @@ def build_cash_input(included: pd.DataFrame) -> pd.DataFrame:
     """把 filtered.build_samples 的 included 样本转成现金计算的输入列。
 
     「动态止盈阈值」「止盈区间」等列只是生成时的参考快照；
-    calc_trades 会按当前分档参数重新判定卖出分支与阈值。
+    calc_trades 会按当前分档参数重新判定卖出分支与阈值，
+    并按当前 --delta 重新判定限价买入（不沿用生成时的买入价列）。
     """
     return pd.DataFrame(
         {
             "命中日期": included["hit_date"].astype(str),
             "股票代码": included["ts_code"].astype(str),
             "股票名称": included["name"].fillna("").astype(str),
+            "命中日收盘价(不复权)": included["t_close_raw"],
             "次日日期": included["t1_date"].astype(str),
             "次次日日期": included["t2_date"].astype(str),
             "次日开盘价(不复权)": included["t1_open_raw"],
+            "次日最低价(不复权)": included["t1_low_raw"],
             "次日收盘价(不复权)": included["t1_close_raw"],
-            "次日日内涨幅": included["t1_intraday_ret"],
+            "T+1收盘对买入价涨幅": included["t1_intraday_ret"],
             "动态止盈阈值": included["exit_threshold"],
             "止盈区间": included["exit_tier"].astype(str),
             "次次日开盘价(不复权)": included["t2_open_raw"],
@@ -518,6 +605,7 @@ def build_samples_from_db(
         args.rise_days,
         exit_tiers,
         args.entry_gap,
+        delta_pct=args.delta,
         require_low_support=args.require_low_support,
     )
     included = samples[samples["included"]].copy()
@@ -596,13 +684,74 @@ def is_limit_down(price: float | None, down_limit: float | None) -> bool:
     )
 
 
+def resolve_buy(row: pd.Series, args: argparse.Namespace) -> dict:
+    """判定 T+1 买入，返回买入基准价（不含滑点）与成交状态。
+
+    delta=0：按 T+1 不复权开盘价买入（原规则）；
+    delta>0（百分点）：限价单，基准价 = open(T+1) - (delta/100)×close(T)，
+    等价于 (1 + a - delta%)×close(T)，a = open(T+1)/close(T)-1（不复权）；
+    T+1 不复权最低价 <= 基准价才算成交（按基准价成交），未触及则买入失败。
+    """
+    t1_open = pd.to_numeric(row["次日开盘价(不复权)"], errors="coerce")
+    if pd.isna(t1_open) or t1_open <= 0:
+        return {
+            "ok": False,
+            "status": "无T+1开盘价",
+            "base": np.nan,
+            "error": "缺少T+1开盘价",
+        }
+    delta_frac = float(args.delta) / 100.0
+    if delta_frac <= 0:
+        return {"ok": True, "status": "已买入", "base": float(t1_open), "error": ""}
+
+    t_close = pd.to_numeric(row.get(OPTIONAL_T_CLOSE_COLUMN), errors="coerce")
+    if pd.isna(t_close) or t_close <= 0:
+        return {
+            "ok": False,
+            "status": "无T日收盘价",
+            "base": np.nan,
+            "error": "缺少T日收盘价，无法计算限价买入价",
+        }
+    base = float(t1_open) - delta_frac * float(t_close)
+    if base <= 0:
+        return {
+            "ok": False,
+            "status": "买入价无效",
+            "base": np.nan,
+            "error": f"限价买入价无效（{base:.3f} <= 0）",
+        }
+    t1_low = pd.to_numeric(row.get(OPTIONAL_T1_LOW_COLUMN), errors="coerce")
+    if pd.isna(t1_low):
+        return {
+            "ok": False,
+            "status": "无T+1最低价",
+            "base": np.nan,
+            "error": "缺少T+1最低价，无法判定限价成交",
+        }
+    if float(t1_low) > base + LIMIT_EPS:
+        return {
+            "ok": False,
+            "status": "限价未成交",
+            "base": np.nan,
+            "error": "T+1日内未触及限价买入价",
+        }
+    return {"ok": True, "status": "已买入", "base": base, "error": ""}
+
+
 def resolve_sell(
     row: pd.Series,
     calendar: list[str],
     args: argparse.Namespace,
     exit_tiers: tuple,
     price_cache: dict,
+    entry_base: float | None = None,
 ) -> dict:
+    """判定卖出分支与实际卖出价。
+
+    entry_base 为买入基准价（resolve_buy 的 base，不含滑点）：止盈目标价与
+    分档涨幅均以它为基准（delta=0 时即 T+1 开盘价，与原口径一致）。
+    直接调用未传 entry_base 时退回开盘价口径。
+    """
     code = str(row["股票代码"])
     buy_date = str(row["次日日期"])
     plan_sell_date = str(row["次次日日期"])
@@ -630,8 +779,10 @@ def resolve_sell(
         base.update(kwargs)
         return base
 
-    if pd.isna(t1_open) or t1_open <= 0:
-        return result(exit_status="无T+1开盘价", error="缺少T+1开盘价")
+    if entry_base is None or not np.isfinite(entry_base) or entry_base <= 0:
+        if pd.isna(t1_open) or t1_open <= 0:
+            return result(exit_status="无T+1开盘价", error="缺少T+1开盘价")
+        entry_base = float(t1_open)
 
     # 单段分档（--open-exit 固定阈值）不需要 T+1 收盘价；多段分档必须先定位档位
     if len(exit_tiers) == 1:
@@ -650,12 +801,13 @@ def resolve_sell(
                 exit_status="无T+1收盘价",
                 error="缺少T+1收盘价，无法确定止盈档位",
             )
-        day1_ret = float(t1_close) / float(t1_open) - 1.0
+        # 分档涨幅：T+1 收盘对买入基准价；delta=0 时即原日内涨幅 close/open-1
+        day1_ret = float(t1_close) / entry_base - 1.0
         idx = tier_index(day1_ret, exit_tiers)
         if idx is None:
             return result(
                 exit_status="无法分档",
-                error="T+1日内涨幅无效，无法落入任何止盈档位",
+                error="T+1收盘对买入价涨幅无效，无法落入任何止盈档位",
             )
         threshold = float(exit_tiers[idx][2])
         tier_label = tier_labels(exit_tiers)[idx]
@@ -665,7 +817,8 @@ def resolve_sell(
         "exit_threshold": threshold,
         "exit_tier": tier_label,
     }
-    target = float(t1_open) * (1.0 + threshold)
+    # 止盈/止损目标价以买入基准价为基准（delta=0 时即原 open(T+1) 口径）
+    target = entry_base * (1.0 + threshold)
 
     # 1) T+2 开盘已高于目标价：直接以开盘价成交
     if pd.notna(t2_open) and t2_open > 0 and float(t2_open) > target:
@@ -772,6 +925,8 @@ def calc_trades(
 ) -> pd.DataFrame:
     """逐样本计算现金盈亏。
 
+    买入按 args.delta 判定（delta=0 开盘价；delta>0 限价单，未触及不交易），
+    卖出分支与止盈阈值按当前分档参数以买入基准价重新判定。
     calendar / price_cache 可由调用方注入（如网格搜索批量预取后传入），
     缺省自行加载交易日历并使用空缓存（按需查库）。
     """
@@ -787,12 +942,29 @@ def calc_trades(
         name = str(row["股票名称"])
         buy_date = str(row["次日日期"])
         plan_sell_date = str(row["次次日日期"])
-        t1_open = pd.to_numeric(row["次日开盘价(不复权)"], errors="coerce")
-        buy_price = (
-            float(t1_open) * (1.0 + args.slippage) if pd.notna(t1_open) else np.nan
-        )
 
-        sell = resolve_sell(row, calendar, args, exit_tiers, price_cache)
+        buy = resolve_buy(row, args)
+        if buy["ok"]:
+            buy_base = float(buy["base"])
+            buy_price = buy_base * (1.0 + args.slippage)
+            sell = resolve_sell(
+                row, calendar, args, exit_tiers, price_cache, entry_base=buy_base
+            )
+        else:
+            buy_base = np.nan
+            buy_price = np.nan
+            sell = {
+                "exit_status": buy["status"],
+                "sell_date": None,
+                "sell_price_raw": np.nan,
+                "delay_days": 0,
+                "exit_mode": "",
+                "t1_intraday_ret": np.nan,
+                "exit_threshold": np.nan,
+                "exit_tier": None,
+                "error": buy["error"],
+            }
+
         sell_price = sell["sell_price_raw"]
         if pd.notna(sell_price) and sell_price > 0:
             sell_price = float(sell_price) * (1.0 - args.slippage)
@@ -841,6 +1013,7 @@ def calc_trades(
                 "lot_mode": args.lot_mode,
                 "lots": lots,
                 "shares": shares,
+                "buy_base_raw": buy_base,
                 "buy_price_raw": buy_price,
                 "sell_price_raw": sell_price,
                 "buy_amount": buy_amount,
@@ -929,7 +1102,11 @@ def build_report(
 ) -> str:
     realized = trades[trades["exit_status"] == "已卖出"].copy()
     delayed = trades[trades["delay_days"] > 0].copy()
-    not_sold = trades[trades["exit_status"] != "已卖出"].copy()
+    buy_failed = trades[trades["exit_status"].isin(BUY_FAIL_STATUSES)].copy()
+    not_sold = trades[
+        (trades["exit_status"] != "已卖出")
+        & ~trades["exit_status"].isin(BUY_FAIL_STATUSES)
+    ].copy()
     mark_to_market = not_sold[
         not_sold["exit_status"].astype(str).str.startswith("超期未卖出")
     ].copy()
@@ -1008,10 +1185,14 @@ def build_report(
     summary_rows = [
         {"指标": "样本数", "数值": str(len(trades))},
         {"指标": "实际买入样本数", "数值": str(int((trades["shares"] > 0).sum()))},
+        {
+            "指标": "买入失败样本数（限价未成交/缺价格）",
+            "数值": str(len(buy_failed)),
+        },
         {"指标": "已卖出样本数", "数值": str(len(realized))},
         {"指标": "延期卖出样本数", "数值": str(len(delayed))},
         {"指标": "超期未卖出(按最后收盘估值)", "数值": str(len(mark_to_market))},
-        {"指标": "无法卖出/无行情样本数", "数值": str(len(unsold))},
+        {"指标": "买入后无法卖出/无行情样本数", "数值": str(len(unsold))},
         {"指标": "买入金额合计", "数值": fmt_money(trades["buy_amount"].sum())},
         {"指标": "买入费用合计", "数值": fmt_money(trades["buy_fee"].sum())},
         {"指标": "卖出金额合计", "数值": fmt_money(realized["sell_amount"].sum())},
@@ -1044,6 +1225,7 @@ def build_report(
             f"- T 日收盘涨跌幅区间：`{fmt_range(args.close_chg)}`",
             f"- 近 {args.rise_days} 日涨幅区间：`{fmt_range(args.rise)}`",
             f"- T+1 买入低开区间：`{fmt_range(args.entry_gap)}`",
+            f"- 买入 delta：`{args.delta:g}%`（0 = 开盘价买入）",
             f"- 信号日最低价条件：{'要求' if args.require_low_support else '不要求'}"
             "（后复权 `low(T) >= close(T-1)`）",
         ]
@@ -1064,7 +1246,17 @@ def build_report(
         f"- 样本数：{len(trades)}",
         f"- 每笔预算：`{args.position:,.0f}` 元",
         f"- 手数模式：`{args.lot_mode}`（100 股/手）",
+        "- 买入执行："
+        + (
+            f"T+1 限价单，基准价 = `(1 + a - {args.delta:g}%) × close(T)`"
+            f"（`a = open(T+1)/close(T)-1`，即开盘下方 {args.delta:g}%）；"
+            "`low(T+1) <= 基准价` 才成交（按基准价，另计滑点），未触及则该样本不交易"
+            if args.delta > 0
+            else "T+1 开盘价（delta=0，原规则）"
+        ),
         f"- 动态止盈分档：{format_tiers_summary(exit_tiers)}",
+        "- 止盈/止损基准：目标价 = 买入基准价 × (1 + 阈值)；分档涨幅 = "
+        "`close(T+1)/买入基准价 - 1`（delta=0 时即原日内涨幅 `close/open`）。",
         "- 卖出执行：T+2 开盘价高于目标价按开盘价卖出；盘中最高价触及目标价按目标价卖出；"
         "否则 T+2 收盘卖出（收盘跌停顺延）。",
         f"- 佣金：`{args.commission:.5%}`，最低 `{args.min_commission:.0f}` 元；"
@@ -1190,13 +1382,17 @@ def build_report(
             "",
             "## 口径说明",
             "",
-            "- 买入价用 T+1 不复权开盘价；卖出价用实际卖出日不复权价格。",
-            "- 止盈目标价 = T+1 开盘价 × (1 + 动态止盈阈值)；阈值按 T+1 日内涨幅 "
-            "close(T+1)/open(T+1)-1 分档确定，负阈值为止损档。",
+            "- 买入基准价：delta=0 时为 T+1 不复权开盘价；delta>0 时为限价 "
+            "(1+a-delta%)×close(T)（a=open(T+1)/close(T)-1，不复权），T+1 最低价触及基准价"
+            "才成交（按基准价成交，未考虑限价单排队与部分成交），未触及则该样本不交易。"
+            "实际买入价 = 基准价×(1+滑点)；卖出价用实际卖出日不复权价格。",
+            "- 止盈目标价 = 买入基准价 × (1 + 动态止盈阈值)；阈值按 T+1 收盘对买入价涨幅 "
+            "close(T+1)/买入基准价-1 分档确定（delta=0 时即原日内涨幅口径），负阈值为止损档。",
             "- 卖出分支按不复权价格与当前分档参数重新判定；样本文件中的「卖出方式」仅作参考，"
             "遇除权日两者可能有细微差异。",
             "- 盘中触及目标价时假设能按目标价精确成交，受 T+2 最高价约束；未考虑滑点前的盘中路径。",
-            "- T+1 收盘价缺失（旧样本文件且数据库也查不到）时无法分档，该样本按错误处理、不交易。",
+            "- T+1 收盘价缺失（旧样本文件且数据库也查不到）时无法分档，该样本按错误处理、不交易；"
+            "T 日收盘价/T+1 最低价缺失时无法判定限价买入，同样不交易。",
             "- 佣金、印花税、过户费按成交金额计算；佣金有最低 5 元限制。",
             "- 滑点默认 0；可通过 `--slippage 0.001` 加入 0.1% 单边滑点。",
             "- 同一交易日多个样本可能重叠，合计净盈亏不是组合净值，也不代表可同时投入的资金。",
@@ -1226,6 +1422,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--max-delay-days 必须 >= 0")
     if args.rise_days <= 0:
         raise SystemExit("--rise-days 必须为正整数")
+    if args.delta < 0:
+        raise SystemExit("--delta 必须 >= 0（百分点；0 = 开盘价买入）")
     for name, rng in (
         ("--gap", args.gap),
         ("--close-chg", args.close_chg),
@@ -1241,8 +1439,15 @@ def main(argv: list[str] | None = None) -> int:
         meta = load_run_meta(csv_path)
         exit_tiers, tiers_source = resolve_exit_tiers(args, meta)
         samples = ensure_t1_close(samples, exit_tiers)
+        samples = ensure_buy_inputs(samples, args)
         source_text = f"现有样本文件 `{csv_path}`"
         require_low_support = meta.get("require_low_support")
+        meta_delta = meta.get("delta")
+        if meta_delta is not None and float(meta_delta) != float(args.delta):
+            print(
+                f"  提示：样本文件生成时 delta={meta_delta}，当前 --delta={args.delta}；"
+                "买入按当前 delta 重新判定，样本集合仍受生成时 delta 的成交筛选影响"
+            )
     else:
         exit_tiers, tiers_source = resolve_exit_tiers(args, {})
         samples, source_text = build_samples_from_db(args, exit_tiers)
@@ -1274,7 +1479,14 @@ def main(argv: list[str] | None = None) -> int:
         )
     print(f"  样本数：{len(samples)}")
     print(f"  每笔预算：{args.position:,.0f} 元；手数模式：{args.lot_mode}")
-    print(f"  止盈规则：按 T+1 日内涨幅（收盘/开盘-1，左开右闭）分档确定逐样本止盈阈值")
+    if args.delta > 0:
+        print(
+            f"  买入规则：T+1 限价单，基准价 = (1 + a - {args.delta:g}%) × close(T)"
+            "（a=open(T+1)/close(T)-1，不复权）；最低价触及才成交，未触及跳过"
+        )
+    else:
+        print("  买入规则：T+1 开盘价买入（delta=0，原规则）")
+    print("  止盈规则：按 T+1 收盘对买入价涨幅（收盘/买入价-1，左开右闭）分档确定逐样本止盈阈值")
     print(f"    {format_tiers_summary(exit_tiers)}")
     print(f"    分档来源：{tiers_source}；尾盘跌停最多顺延 {args.max_delay_days} 日")
     print("-" * 90)
@@ -1285,7 +1497,9 @@ def main(argv: list[str] | None = None) -> int:
     stats_ret = stats(realized["net_return"])
     delayed_n = int((trades["delay_days"] > 0).sum())
     mark_n = int(trades["exit_status"].astype(str).str.startswith("超期未卖出").sum())
-    not_sold_n = len(trades) - len(realized)
+    buy_fail_n = int(trades["exit_status"].isin(BUY_FAIL_STATUSES).sum())
+    limit_miss_n = int((trades["exit_status"] == "限价未成交").sum())
+    not_sold_n = len(trades) - len(realized) - buy_fail_n
     unsold_n = not_sold_n - mark_n
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -1329,8 +1543,11 @@ def main(argv: list[str] | None = None) -> int:
             "rise_range": list(args.rise),
             "rise_days": args.rise_days,
             "entry_gap_range": list(args.entry_gap),
+            "delta": args.delta,
             "require_low_support": require_low_support,
             "samples": len(trades),
+            "buy_failed_samples": buy_fail_n,
+            "limit_not_filled_samples": limit_miss_n,
             "position": args.position,
             "lot_mode": args.lot_mode,
             "exit_tiers": tiers_to_jsonable(exit_tiers),
@@ -1361,9 +1578,14 @@ def main(argv: list[str] | None = None) -> int:
 
     print("")
     print(f"实际买入：{int((trades['shares'] > 0).sum())} 条 / 样本 {len(trades)} 条")
+    if buy_fail_n:
+        print(
+            f"买入失败：{buy_fail_n} 条（其中限价未成交 {limit_miss_n} 条，"
+            "其余为缺 T 日收盘价/T+1 最低价等）"
+        )
     print(
         f"已卖出：{len(realized)} 条；延期卖出：{delayed_n} 条；"
-        f"超期未卖出(估值)：{mark_n} 条；无法卖出/无行情：{unsold_n} 条"
+        f"超期未卖出(估值)：{mark_n} 条；买入后无法卖出/无行情：{unsold_n} 条"
     )
     print(f"已实现净盈亏合计：{fmt_money(realized['net_pnl'].sum())} 元")
     print(f"平均每笔净盈亏：{fmt_money(stats_pnl.get('平均'))} 元")
