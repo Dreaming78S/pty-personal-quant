@@ -23,7 +23,7 @@ uv run quant hits update -s all                  # 回填/增量写入 hit_<策�
 uv run quant limit update                        # 回填/增量写入主板涨停、跌停股表
 uv run quant recommend                           # 显示当日最终推荐（七个指数闸门 + 分层，只读不推送）
 uv run quant notify                              # 飞书推送默认三张卡：今日最终推荐（列七指数） + 趋势跌停/涨停洗盘 + 多策略共振
-uv run quant notify -s all --dry-run             # 只打印不发送，预览旧版全部策略卡（含共振、复合）
+uv run quant notify -s all --dry-run             # 只打印不发送，预览全策略卡模式（含共振、复合）
 ```
 
 ## 交易日盘后流程
@@ -74,7 +74,7 @@ uv run quant bot serve                                  # 启动长连接常驻�
 - `uv run quant limit update` 从 `daily`、`stk_limit`、`daily_basic` 等本地数据推导两张表：
   - `limit_up_daily`：主板收盘涨停股
   - `limit_down_daily`：主板收盘跌停股
-- 统计口径：只统计收盘封住涨停/跌停；`ts_code` 以 `60` 或 `00` 开头（沪深主板）；按 `namechange` 排除当日 ST；上市不满 60 个交易日的新股；排除停牌。
+- 统计口径：只统计收盘封住涨停/跌停；`ts_code` 以 `60` 或 `00` 开头（沪深主板）；按 `namechange` 排除当日 ST；排除上市不满 60 个交易日的新股；排除停牌。
 - 涨跌停判定用 `raw_close` 对比 `stk_limit` 的 `up_limit/down_limit`，不用涨幅阈值；`is_one_word` 标记一字板，`streak` 为连续涨停/跌停交易日数（停牌或断板后重新从 1 开始）。
 - 默认从 2018-01-01 回填，水位线存 `ingest_log`，可增量续跑、幂等重跑；显式传 `--from-date` 视为重算：先清空该区间旧行再重新计算。
 - 两张表是派生数据：不参与 Tushare 抓取、本地 Parquet 缓存与夜间全量重建清空；`quant data status` 可查看行数与水位线。Tushare `limit_list_d` 的 `first_time/last_time/open_times` 等盘中字段无法从日线推导，当前表不包含。
@@ -228,8 +228,8 @@ uv run python tmp_scripts/rebuild_data.py --skip-truncate    # 中断后不清�
 
 - `outputs/select/<日期>_<策略>.csv`：`quant select` 选股结果
 - `outputs/backtest/<策略>_<时间戳>/`：回测权益 `equity.csv`、成交 `trades.csv`、指标 `metrics.json` 与净值图 `equity.png`
-- `outputs/reports/`：命中表现、共振拆分、通用命中回测等报告与明细（由本地 `tmp_scripts/` 下脚本生成）
-- 本地 Parquet 缓存 `data_cache/`、日志 `logs/`；`outputs/`、`data_cache/`、`logs/` 已 gitignore，`tmp_scripts/` 已纳入版本管理
+- `outputs/limitup_shakeout_*_<时间戳>/`：`tmp_scripts/limitup_shakeout_*.py` 研究脚本生成的报告、CSV 与图
+- Parquet 缓存 `data_cache/`、日志 `logs/`、报告 `outputs/` 均已 gitignore；`tmp_scripts/` 已纳入版本管理
 
 ## 测试
 
