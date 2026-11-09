@@ -43,7 +43,7 @@ os.chdir(ROOT)
 from quant.data import db  # noqa: E402
 from quant.engine.exit_tiers import DEFAULT_EXIT_TIERS  # noqa: E402
 
-import limitup_shakeout_filtered_returns as filtered  # noqa: E402
+import limitup_shakeout_returns as filtered  # noqa: E402
 
 # ==============================================================================
 # 统计区间：默认覆盖命中表全部历史
@@ -51,10 +51,9 @@ DEFAULT_START = "20180101"
 DEFAULT_END = "latest"
 
 # build_samples 需要的固定参数（本统计不做这些筛选，仅沿用默认值计算出基础列）
-DEFAULT_RISE_DAYS = 5
+FIXED_N_DAYS_RISE = "unlimited"
 FIXED_GAP = (0.00, 0.11)
 FIXED_CLOSE_CHG = (0.0, 0.11)
-FIXED_RISE = (-10, 10)
 FIXED_ENTRY_GAP = (-0.11, 0.0)
 # ==============================================================================
 
@@ -388,43 +387,29 @@ def main(argv: list[str] | None = None) -> int:
     print(f"命中样本：{len(hits):,} 条（{hits['hit_date'].min()} ~ {hits['hit_date'].max()}）")
 
     calendar = with_retry(filtered.load_calendar, "读取交易日历")
-    hits = filtered.attach_dates(hits, calendar, DEFAULT_RISE_DAYS)
-    needed_dates = pd.concat(
-        [
-            hits["hit_date"],
-            hits["prev_date"],
-            hits["rise_ref_date"],
-            hits["t1_date"],
-            hits["t2_date"],
-        ],
-        ignore_index=True,
-    ).dropna()
-    if needed_dates.empty:
-        raise SystemExit("无法定位任何交易日")
-    min_date, max_date = str(needed_dates.min()), str(needed_dates.max())
+    hits = filtered.attach_dates(hits, calendar, FIXED_N_DAYS_RISE)
 
-    print(f"读取行情 {min_date} ~ {max_date} ...")
+    print("读取行情（按样本角色日期精确取数）...")
     prices = with_retry(
-        lambda: filtered.load_prices(
-            sorted(hits["ts_code"].unique()), min_date, max_date
-        ),
+        lambda: filtered.load_prices_by_keys(filtered.price_keys_for_hits(hits)),
         "读取行情",
     )
     if prices.empty:
         raise SystemExit("没有读取到行情数据")
     print(f"行情行数：{len(prices):,}（耗时 {time.time() - t0:.1f}s）")
 
-    # 基础列复用 filtered.build_samples（含 entry_gap_close_raw / passed_low_support）
+    # 基础列复用 filtered.build_samples（含 entry_gap_close_raw /
+    # entry_gap_pre_close_raw / passed_low_support）
     samples = filtered.build_samples(
         hits,
         prices,
         FIXED_GAP,
         FIXED_CLOSE_CHG,
-        FIXED_RISE,
-        DEFAULT_RISE_DAYS,
+        FIXED_N_DAYS_RISE,
         DEFAULT_EXIT_TIERS,
         FIXED_ENTRY_GAP,
         require_low_support=True,
+        compute_reasons=False,
     )
     sel = samples[samples["passed_low_support"]].copy()
     print(f"满足最低价支撑：{len(sel):,} / {len(samples):,} 条")
@@ -460,7 +445,7 @@ def main(argv: list[str] | None = None) -> int:
     for col in (GAP_COL, LOW_COL, LOW_REF_COL):
         sel[col] = sel[col].replace([np.inf, -np.inf], np.nan)
     sel["低开幅度(对除权昨收,%)"] = (
-        pd.to_numeric(sel["entry_gap"], errors="coerce") * 100.0
+        pd.to_numeric(sel["entry_gap_pre_close_raw"], errors="coerce") * 100.0
     )
 
     n_total = len(samples)

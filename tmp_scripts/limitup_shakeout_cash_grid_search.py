@@ -1,60 +1,39 @@
-"""对 limit_up_shakeout 现金收益做 止盈分档 × T+1 买入低开区间 × 限价买入深度 的网格搜索。
+"""limit_up_shakeout 现金收益网格搜索。
 
 搜索维度：
-- 止盈分档 EXIT_TIERS_GRID：T+1 收盘对买入价涨幅 → T+2 止盈率的分段函数（左开右闭），
-  33 个候选，覆盖 6 个设计维度：
-  * 固定阈值锚点（单段）：0% / 0.5% / 1% / 1.5% / 2% / 3% / 4% / 5%，用于对比
-    “动态分档是否优于固定阈值”并定位固定阈值的最优水平；半步档（0.5% / 1.5%）
-    同时服务于对角线对比（见下）；
-  * 高段边界：>3% / >5% / >7% / >10% 单独分档，或不分高段；
-  * 高段阈值：3% / 4% / 5%；
-  * 低段目标：0% / 0.5% / 1% / 1.5%，或 T+2 开盘即走；
-  * 中段细分：0/3/7、0/5/7，以及整体平移 -0.5pp / +0.5pp / +1pp（分档20/19/25）；
-  * 止损设计：-2% / -3% / -5% 止损率 × -3% / -5% / -7% 触发边界，以及
-    “深跌段要求小反弹 +0.5%”的温和变体；分档22 为旧版系统默认的 5 档结构；
-    分档23 / 分档24 为综合前三轮发现的两条“低段 0.5% + 高段 4%”假设。
-- T+1 买入低开区间 ENTRY_GAP_GRID：[-5%, 0%] 与 [-11%, 0%] 两个候选。
-- 限价买入深度 DELTA_GRID（百分点）：0 / 0.5 / 1.0 / 1.5 / 2.0；0 即开盘价买入
-  （与历史轮次完全同口径）。买入基准价 = (1 + a - delta%) × close(T)，
-  a = open(T+1)/close(T)-1（不复权）；T+1 最低价触及基准价才成交（按基准价成交），
-  未触及则该样本不交易。分档涨幅与止盈目标价均以买入基准价为基准。
+1. 止盈分档：T+1 收盘对买入价涨幅 → T+2 止盈率的分段函数（左开右闭）。
+   含固定阈值、全正分档、含止损分档、低段开盘卖、深跌小反弹等多族候选。
+2. T+1 买入低开区间：按原始价 `(open_raw(T+1) - close_raw(T)) / close_raw(T)`
+   划分，支持全区间、高开/低开分区、低开嵌套区间。
+3. 是否要求 T 日最低价支撑：后复权 `low(T) >= close(T-1)`，True / False。
 
-delta 与止盈阈值存在近似平移等价：目标价换回开盘价口径 ≈ 阈值 r − delta。因此
-网格内置“对角线对比”：取 r = delta（固定0%@d0 → 固定0.5%@d0.5 → 固定1%@d1 →
-固定1.5%@d1.5 → 固定2%@d2；3 档阶梯 分档2@d0 → 分档19@d0.5 → 分档25@d1），
-卖出目标相对开盘价几乎不变，唯一变化是买入更便宜 + 成交率下降，用于隔离
-“限价折价本身是否划算”；固定阈值单段方案的分档涨幅口径不影响其行为，对角线最纯净。
+固定条件（与 limitup_shakeout_returns.py 默认口径一致）：
+- T 日高开：`raw_open(T) / raw_pre_close(T) - 1 ∈ [0%, 11%]`
+- T 日收盘涨跌幅：`raw_close(T) / raw_pre_close(T) - 1 ∈ [0%, 11%]`
+- 近 N 日涨幅：默认不限
+- 买入：T+1 原始开盘价（delta=0，不再搜索限价深度）
 
-其余筛选参数固定（见 FIXED 参数区）：统计区间 20181101 ~ latest、T 日高开
-[0%, 11%]、T 日收盘涨跌幅 [0%, 11%]、近 5 日涨幅 [-1000%, 1000%]、要求信号日
-最低价不破前一日收盘（后复权）。
-
-收益口径与 limitup_shakeout_cash_returns.py 完全一致（直接复用其函数）：
-- 按每笔预算取最大整数手（floor）；实际买入价 = 买入基准价 × (1 + 滑点)；
-- 卖出分支按当前分档参数逐样本重新判定：T+2 开盘高于目标价（买入价×(1+阈值)）
-  按开盘卖、盘中最高价触及目标价按目标价卖、否则 T+2 收盘卖；
-- 收盘跌停顺延下一交易日开盘，最多 10 个交易日，超期按最后收盘估值；
-- 佣金 0.025%（最低 5 元）、印花税 0.05%（卖出）、过户费 0.001%（双边）、滑点 0。
-
-样本冻结设计：每个 (低开区间 × delta) 只用“分档1”跑一次样本筛选（delta>0 时
-样本集合依赖限价成交判定，必须逐 delta 冻结），该 (低开 × delta) 下全部 33 个
-分档共用同一样本集合（按构造一致），保证对比只反映离场规则差异；运行时另用两个
-极端阈值轮廓（固定0%、固定5%）独立重筛校验各冻结集合差异（见报告）。
+输出：
+- `grid_results.csv`：全部组合（分档 × 低开区间 × 支撑条件）的汇总指标
+- `tier_main_effects.csv`：按止盈分档汇总的主效应
+- `entry_gap_main_effects.csv`：按低开区间汇总的主效应
+- `family_main_effects.csv`：按分档族汇总的主效应
+- `low_support_effects.csv`：同一（分档 × 低开区间）下，要求/不要求支撑的配对差异
+- `low_support_summary.csv`：按低开区间汇总的支撑效应
+- `best_by_entry_support.csv`：每个（低开区间 × 支撑条件）下的最佳分档
+- `yearly_stats.csv` / `tier_breakdown.csv` / `sell_mode_breakdown.csv`
+- `all_trades.csv`：Top-N 组合 + 基准组合的逐笔明细
+- `run_meta.json` / `report.md`
 
 用法：
     uv run python tmp_scripts/limitup_shakeout_cash_grid_search.py
+    uv run python tmp_scripts/limitup_shakeout_cash_grid_search.py --start 2024-01-01 --end latest
     uv run python tmp_scripts/limitup_shakeout_cash_grid_search.py --no-report
-    uv run python tmp_scripts/limitup_shakeout_cash_grid_search.py --slippage 0.001
+    uv run python tmp_scripts/limitup_shakeout_cash_grid_search.py --min-samples 100
+    uv run python tmp_scripts/limitup_shakeout_cash_grid_search.py --top-trades 30
 
-all_trades.csv 默认只写 Top50 组合 ∪ 基准扫描组合（DELTA_ANCHOR_SCHEMES × 低开1
-× 全部 delta，见 DEFAULT_TRADES_TOP_N），避免百万行级文件；全部组合的指标都在
-grid_results.csv。除现金明细外还带 5 个分析列（按 命中日+代码 附着）：
-行业（命中表快照）、买入日低开(%)（open(T+1)/除权后昨收-1，低开 3.3 个点记 -3.3）、
-买入日流通市值(万元)（T+1 日 daily_basic.circ_mv）、量能比(T/T-1)（T 日成交量/
-T-1 日成交量，与策略“放量”同口径）、涨停日K线实体(%)（(T-1 收盘-T-1 开盘)/
-T-1 开盘×100）。
-
-默认生成报告到 outputs/limitup_shakeout_cash_grid_search_<时间戳>/。
+注意：本脚本是样本内网格搜索。组合数量很大，排名靠前的组合存在过拟合/多重检验风险；
+应优先看分档族主效应、低开区间主效应和年度稳定性，而不是只看单个最优组合。
 """
 
 from __future__ import annotations
@@ -78,6 +57,7 @@ os.chdir(ROOT)
 
 from quant.data import db  # noqa: E402
 from quant.engine.exit_tiers import (  # noqa: E402
+    DEFAULT_EXIT_TIERS,
     format_tiers_summary,
     tier_labels,
     tiers_from_scalar,
@@ -85,320 +65,300 @@ from quant.engine.exit_tiers import (  # noqa: E402
     validate_exit_tiers,
 )
 
-import limitup_shakeout_cash_returns as cash  # noqa: E402
-import limitup_shakeout_filtered_returns as filtered  # noqa: E402
+# 合并后的模块同时保留原 cash / filtered 两套函数名，这里统一用 cash 别名
+import limitup_shakeout_returns as cash  # noqa: E402
 
 # ==============================================================================
-# 固定筛选参数（与 limitup_shakeout_cash_returns.py 的默认口径一致）
+# 固定筛选参数（与 limitup_shakeout_returns.py 的默认口径一致）
 DEFAULT_START = "20181101"
 DEFAULT_END = "latest"
 DEFAULT_GAP = (0.00, 0.11)
 DEFAULT_CLOSE_CHG = (0.0, 0.11)
-DEFAULT_RISE_DAYS = 5
-DEFAULT_RISE = (-10, 10)
+DEFAULT_N_DAYS_RISE = "unlimited"
+# 原策略默认要求最低价支撑；本网格同时搜索 True/False 两个取值。
 DEFAULT_REQUIRE_LOW_SUPPORT = True
 
-FAMILY_FIXED = "固定阈值"
-FAMILY_POSITIVE = "全正阈值"
-FAMILY_NEGATIVE = "含负阈值"
-FAMILY_ORDER = (FAMILY_FIXED, FAMILY_POSITIVE, FAMILY_NEGATIVE)
-
-# 止盈分档候选：(名称, 分段函数, 族)。区间左开右闭，None 表示 ±∞。
-# 分档1~4 与上一轮网格搜索定义完全一致，便于纵向对比。
-EXIT_TIERS_GRID: list[tuple[str, tuple, str]] = [
-    # ---- 固定阈值锚点（单段，不分档）；半步档 0.5%/1.5% 服务于对角线对比（r=delta）----
-    ("固定0%", tiers_from_scalar(0.00), FAMILY_FIXED),
-    ("固定0.5%", tiers_from_scalar(0.005), FAMILY_FIXED),
-    ("固定1%", tiers_from_scalar(0.01), FAMILY_FIXED),
-    ("固定1.5%", tiers_from_scalar(0.015), FAMILY_FIXED),
-    ("固定2%", tiers_from_scalar(0.02), FAMILY_FIXED),
-    ("固定3%", tiers_from_scalar(0.03), FAMILY_FIXED),
-    ("固定4%", tiers_from_scalar(0.04), FAMILY_FIXED),
-    ("固定5%", tiers_from_scalar(0.05), FAMILY_FIXED),
-    # ---- 全正阈值（无止损）----
-    ("分档1", (
-        (None, 0.00, 0.01),
-        (0.00, None, 0.02),
-    ), FAMILY_POSITIVE),   # 2 档基线
-    ("分档2", (
-        (None, 0.00, 0.01),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_POSITIVE),   # 3 档基线（上一轮最优）
-    ("分档5", (
-        (None, 0.00, 0.01),
-        (0.00, 0.05, 0.02),
-        (0.05, None, 0.03),
-    ), FAMILY_POSITIVE),   # 高段边界 5%
-    ("分档6", (
-        (None, 0.00, 0.01),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.04),
-    ), FAMILY_POSITIVE),   # 高段阈值 4%
-    ("分档7", (
-        (None, 0.00, 0.01),
-        (0.00, 0.03, 0.02),
-        (0.03, None, 0.03),
-    ), FAMILY_POSITIVE),   # 高段边界 3%
-    ("分档8", (
-        (None, 0.00, 0.01),
-        (0.00, 0.07, 0.02),
-        (0.07, 0.10, 0.03),
-        (0.10, None, 0.05),
-    ), FAMILY_POSITIVE),   # 超高段 >10% → 5%
-    ("分档9", (
-        (None, 0.00, 0.01),
-        (0.00, 0.03, 0.015),
-        (0.03, 0.07, 0.025),
-        (0.07, None, 0.035),
-    ), FAMILY_POSITIVE),   # 中段细分 0/3/7
-    ("分档10", (
-        (None, 0.00, 0.01),
-        (0.00, 0.05, 0.015),
-        (0.05, 0.07, 0.025),
-        (0.07, None, 0.035),
-    ), FAMILY_POSITIVE),   # 中段细分 0/5/7
-    ("分档11", (
-        (None, 0.00, 0.005),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_POSITIVE),   # 低段目标 0.5%
-    ("分档12", (
-        (None, 0.00, 0.015),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_POSITIVE),   # 低段目标 1.5%
-    ("分档13", (
-        (None, 0.00, 0.00),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_POSITIVE),   # 低段保本 0%
-    ("分档16", (
-        (None, -0.05, 0.005),
-        (-0.05, 0.00, 0.01),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_POSITIVE),   # 深跌段要求小反弹 +0.5%（不认赔）
-    ("分档19", (
-        (None, 0.00, 0.015),
-        (0.00, 0.07, 0.025),
-        (0.07, None, 0.035),
-    ), FAMILY_POSITIVE),   # 整体 +0.5pp
-    ("分档20", (
-        (None, 0.00, 0.005),
-        (0.00, 0.07, 0.015),
-        (0.07, None, 0.025),
-    ), FAMILY_POSITIVE),   # 整体 -0.5pp
-    ("分档25", (
-        (None, 0.00, 0.02),
-        (0.00, 0.07, 0.03),
-        (0.07, None, 0.04),
-    ), FAMILY_POSITIVE),   # 整体 +1pp（对角线：分档2@d0 ≈ 分档19@d0.5 ≈ 分档25@d1 的开盘价口径目标）
-    ("分档23", (
-        (None, 0.00, 0.005),
-        (0.00, 0.07, 0.03),
-        (0.07, None, 0.04),
-    ), FAMILY_POSITIVE),   # 综合：低段 0.5% + 中段 3% + 高段 4%
-    ("分档24", (
-        (None, 0.00, 0.005),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.04),
-    ), FAMILY_POSITIVE),   # 综合：低段 0.5% + 中段 2% + 高段 4%
-    # ---- 含负阈值（含止损或低段负目标）----
-    ("分档3", (
-        (None, -0.05, -0.03),
-        (-0.05, 0.00, 0.01),
-        (0.00, None, 0.02),
-    ), FAMILY_NEGATIVE),   # 3 档含止损（上一轮）
-    ("分档4", (
-        (None, -0.05, -0.03),
-        (-0.05, 0.00, 0.01),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_NEGATIVE),   # 4 档含止损（上一轮）
-    ("分档14", (
-        (None, -0.05, -0.02),
-        (-0.05, 0.00, 0.01),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_NEGATIVE),   # 止损 -2%@-5%
-    ("分档15", (
-        (None, -0.05, -0.05),
-        (-0.05, 0.00, 0.01),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_NEGATIVE),   # 止损 -5%@-5%（深止损）
-    ("分档17", (
-        (None, -0.03, -0.02),
-        (-0.03, 0.00, 0.01),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_NEGATIVE),   # 止损 -2%@-3%（更早触发）
-    ("分档18", (
-        (None, -0.07, -0.03),
-        (-0.07, 0.00, 0.01),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_NEGATIVE),   # 止损 -3%@-7%（更晚触发）
-    ("分档21", (
-        (None, 0.00, -0.10),
-        (0.00, 0.07, 0.02),
-        (0.07, None, 0.03),
-    ), FAMILY_NEGATIVE),   # 低段 T+2 开盘即走（-10% 目标近似无条件开盘卖）
-    ("分档22", (
-        (None, -0.05, -0.02),
-        (-0.05, 0.00, 0.01),
-        (0.00, 0.05, 0.02),
-        (0.05, 0.07, 0.03),
-        (0.07, None, 0.04),
-    ), FAMILY_NEGATIVE),   # 旧版默认 5 档（-2%@-5% + 0/5/7 细分）
-]
-
-# 样本冻结的基准分档：该 (低开 × delta) 下所有分档共用它筛出的样本集合
-REFERENCE_SCHEME = "分档1"
-# 校验冻结样本集合用的极端阈值轮廓：最低（固定0%）与最高（固定5%，全段 5% 为最高阈值）
-VERIFY_SCHEMES = ("固定0%", "固定5%")
-
-# T+1 买入低开区间候选：(名称, 区间)
-ENTRY_GAP_GRID = [
-    ("低开1", (-0.05, 0.0)),
-    ("低开2", (-0.11, 0.0)),
-]
-
-# 限价买入深度候选（百分点）：0 = 开盘价买入（原口径，与历史轮次直接可比）；
-# 名称用于组合 id（分档×低开×dX）。买入基准价 = (1 + a - delta%) × close(T)，
-# a = open(T+1)/close(T)-1（不复权），T+1 最低价触及基准价才成交
-DELTA_GRID: list[tuple[str, float]] = [
-    ("d0", 0.0),
-    ("d0.5", 0.5),
-    ("d1", 1.0),
-    ("d1.5", 1.5),
-    ("d2", 2.0),
-]
-
-# delta 主扫描的基准分档：报告的 delta 结论行引用这些分档，且其 (× 低开1 × 全部 delta)
-# 组合无条件写入 all_trades.csv 明细
-DELTA_ANCHOR_SCHEMES = (
-    "固定0%", "固定1%", "固定2%", "固定3%", "固定5%",
-    "分档1", "分档2", "分档4", "分档22", "分档23", "分档24",
-)
-
-# 关键单变量对比（基准组合, 变体组合, 标题）；组合 id = 分档名×低开名×delta名。
-# 第一组为分档间/低开间对比，固定在 delta=0（与历史轮次同口径）；
-# 第二、三组为 delta 相关对比：对角线（卖出目标相对开盘价 ≈ 不变，只加深折价）
-# 与同分档加深折价（阈值相对买入成本不变）。
-COMPARISONS: list[tuple[str, str, str]] = [
-    # ---- 分档对比（×低开1×d0，历史口径连续）----
-    ("分档2×低开1×d0", "分档4×低开1×d0", "加止损 -3%@-5%"),
-    ("分档2×低开1×d0", "分档14×低开1×d0", "加止损 -2%@-5%"),
-    ("分档2×低开1×d0", "分档15×低开1×d0", "加止损 -5%@-5%"),
-    ("分档2×低开1×d0", "分档17×低开1×d0", "止损更早触发（-2%@-3%）"),
-    ("分档2×低开1×d0", "分档18×低开1×d0", "止损更晚触发（-3%@-7%）"),
-    ("分档2×低开1×d0", "分档16×低开1×d0", "深跌段改为要求 +0.5% 小反弹"),
-    ("分档2×低开1×d0", "分档22×低开1×d0", "5 档结构（止损 -2%@-5% + 0/5/7 中段细分）"),
-    ("分档1×低开1×d0", "分档2×低开1×d0", ">7% 单独分档 → +3%"),
-    ("分档1×低开1×d0", "分档5×低开1×d0", ">5% 单独分档 → +3%"),
-    ("分档1×低开1×d0", "分档7×低开1×d0", ">3% 单独分档 → +3%"),
-    ("分档2×低开1×d0", "分档6×低开1×d0", ">7% 段阈值 3% → 4%"),
-    ("分档2×低开1×d0", "分档8×低开1×d0", ">10% 再单独分档 → +5%"),
-    ("分档2×低开1×d0", "分档9×低开1×d0", "中段细分 0/3/7"),
-    ("分档2×低开1×d0", "分档10×低开1×d0", "中段细分 0/5/7"),
-    ("分档2×低开1×d0", "分档11×低开1×d0", "低段目标 1% → 0.5%"),
-    ("分档2×低开1×d0", "分档12×低开1×d0", "低段目标 1% → 1.5%"),
-    ("分档2×低开1×d0", "分档13×低开1×d0", "低段目标 1% → 0%（保本）"),
-    ("分档2×低开1×d0", "分档21×低开1×d0", "低段改为 T+2 开盘即走"),
-    ("分档2×低开1×d0", "分档19×低开1×d0", "整体阈值 +0.5pp"),
-    ("分档2×低开1×d0", "分档20×低开1×d0", "整体阈值 -0.5pp"),
-    ("分档2×低开1×d0", "固定0%×低开1×d0", "换成固定保本 0%"),
-    ("分档2×低开1×d0", "固定1%×低开1×d0", "换成固定 1%"),
-    ("分档2×低开1×d0", "固定2%×低开1×d0", "换成固定 2%"),
-    ("分档2×低开1×d0", "固定3%×低开1×d0", "换成固定 3%"),
-    ("固定3%×低开1×d0", "固定4%×低开1×d0", "固定阈值 3% → 4%"),
-    ("固定4%×低开1×d0", "固定5%×低开1×d0", "固定阈值 4% → 5%"),
-    ("分档11×低开1×d0", "分档23×低开1×d0", "中段 2% → 3%（低段 0.5%、高段 4% 保持）"),
-    ("分档11×低开1×d0", "分档24×低开1×d0", "高段 3% → 4%（低段 0.5%、中段 2% 保持）"),
-    ("分档2×低开1×d0", "分档2×低开2×d0", "低开放宽到 [-11%, 0%]"),
-    ("分档14×低开1×d0", "分档14×低开2×d0", "低开放宽（止损 -2%@-5% 下）"),
-    ("分档22×低开1×d0", "分档22×低开2×d0", "低开放宽（默认 5 档下）"),
-    ("固定2%×低开1×d0", "固定2%×低开2×d0", "低开放宽（固定 2% 下）"),
-    # ---- 对角线：卖出目标相对开盘价 ≈ 不变，只加深买入折价（r = delta）----
-    ("固定0%×低开1×d0", "固定0.5%×低开1×d0.5", "对角线：折价 0.5%（目标 ≈ 开盘价不变）"),
-    ("固定0.5%×低开1×d0.5", "固定1%×低开1×d1", "对角线：折价 1.0%"),
-    ("固定1%×低开1×d1", "固定1.5%×低开1×d1.5", "对角线：折价 1.5%"),
-    ("固定1.5%×低开1×d1.5", "固定2%×低开1×d2", "对角线：折价 2.0%"),
-    ("分档2×低开1×d0", "分档19×低开1×d0.5", "对角线（3 档）：+0.5pp 阈值配 0.5% 折价"),
-    ("分档19×低开1×d0.5", "分档25×低开1×d1", "对角线（3 档）：+1pp 阈值配 1% 折价"),
-    # ---- 同分档加深折价（阈值相对买入成本不变）----
-    ("分档2×低开1×d0", "分档2×低开1×d2", "分档2：折价 0 → 2%"),
-    ("固定2%×低开1×d0", "固定2%×低开1×d2", "固定2%：折价 0 → 2%"),
-    ("分档4×低开1×d0", "分档4×低开1×d2", "含止损分档4：折价 0 → 2%"),
-    ("分档22×低开1×d0", "分档22×低开1×d2", "旧默认 5 档：折价 0 → 2%"),
-]
-# ==============================================================================
-
+# 现金口径：与 cash_trades.csv 默认运行参数保持一致
 DEFAULT_POSITION = 100_000.0
 DEFAULT_LOT_MODE = "floor"
 DEFAULT_MAX_DELAY_DAYS = 10
-DEFAULT_COMMISSION = 0.00025
-DEFAULT_MIN_COMMISSION = 5.0
-DEFAULT_STAMP = 0.0005
-DEFAULT_TRANSFER = 0.00001
-DEFAULT_SLIPPAGE = 0.0
+DEFAULT_COMMISSION = cash.DEFAULT_COMMISSION
+DEFAULT_MIN_COMMISSION = cash.DEFAULT_MIN_COMMISSION
+DEFAULT_STAMP = cash.DEFAULT_STAMP
+DEFAULT_TRANSFER = cash.DEFAULT_TRANSFER
+DEFAULT_SLIPPAGE = cash.DEFAULT_SLIPPAGE
 DEFAULT_GENERATE_REPORT = True
-# all_trades.csv 写入的组合数上限（按平均净收益率取 Top-N，0 = 全部组合）；
-# 另外无条件包含 DELTA_ANCHOR_SCHEMES × 低开1 × 全部 delta 的基准扫描组合
 DEFAULT_TRADES_TOP_N = 50
+MIN_SAMPLES_FOR_RANKING = 100
+
+FAMILY_BASELINE = "现行默认"
+FAMILY_FIXED = "固定阈值"
+FAMILY_POSITIVE = "全正分档"
+FAMILY_STOP = "含止损"
+FAMILY_REBOUND = "深跌小反弹"
+FAMILY_OPEN = "低段开盘卖"
+FAMILY_ORDER = (
+    FAMILY_BASELINE,
+    FAMILY_FIXED,
+    FAMILY_POSITIVE,
+    FAMILY_STOP,
+    FAMILY_REBOUND,
+    FAMILY_OPEN,
+)
+
+
+# ==============================================================================
+# 止盈分档设计
+# 区间为左开右闭 (lo, hi]，None 表示 ±∞；rate 为 T+2 止盈率（可为负，即止损）。
+# ==============================================================================
+
+
+def tiers_pct(bounds: list[float], rates: list[float]) -> tuple:
+    """用“百分点”写分档：bounds 为内部边界，rates 为各段止盈率。
+
+    例：tiers_pct([0, 5, 7], [1, 2, 3, 4])
+    → (-∞,0]→1%；(0,5]→2%；(5,7]→3%；(7,+∞)→4%。
+    """
+    bounds = [float(b) for b in bounds]
+    rates = [float(r) for r in rates]
+    if len(bounds) != len(rates) - 1:
+        raise ValueError(
+            f"分档边界数必须等于止盈率数-1：bounds={bounds}, rates={rates}"
+        )
+    if any(b2 <= b1 for b1, b2 in zip(bounds, bounds[1:])):
+        raise ValueError(f"分档边界必须严格递增：{bounds}")
+    tiers = []
+    for i, rate in enumerate(rates):
+        lo = None if i == 0 else bounds[i - 1] / 100.0
+        hi = None if i == len(rates) - 1 else bounds[i] / 100.0
+        tiers.append((lo, hi, rate / 100.0))
+    return tuple(tiers)
+
+
+# 固定阈值锚点：覆盖 0.25% ~ 8%，用于判断“动态分档是否优于固定阈值”
+FIXED_RATES_PCT = [
+    0.0,
+    0.25,
+    0.5,
+    0.75,
+    1.0,
+    1.25,
+    1.5,
+    2.0,
+    2.5,
+    3.0,
+    4.0,
+    5.0,
+    6.0,
+    8.0,
+]
+
+# 全正分档候选：(名称, 内部边界(%), 各段止盈率(%))
+POSITIVE_SPECS: list[tuple[str, list[float], list[float]]] = [
+    # ---- 2 档：低段/高段 ----
+    ("2档_0_1_2", [0], [1, 2]),
+    ("2档_0_0.5_2", [0], [0.5, 2]),
+    ("2档_0_1.5_2.5", [0], [1.5, 2.5]),
+    ("2档_0_1_3", [0], [1, 3]),
+    ("2档_0_2_3", [0], [2, 3]),
+    ("2档_0_1_4", [0], [1, 4]),
+    ("2档_0_0.5_1.5", [0], [0.5, 1.5]),
+    ("2档_0_0_2", [0], [0, 2]),
+    ("2档_3_1_2", [3], [1, 2]),
+    ("2档_5_1_2", [5], [1, 2]),
+    ("2档_5_1_3", [5], [1, 3]),
+    ("2档_7_1_3", [7], [1, 3]),
+    ("2档_7_1_4", [7], [1, 4]),
+    ("2档_10_1_3", [10], [1, 3]),
+    # ---- 3 档：低/中/高 ----
+    ("3档_0_5_1_2_3", [0, 5], [1, 2, 3]),
+    ("3档_0_5_0.5_2_3", [0, 5], [0.5, 2, 3]),
+    ("3档_0_5_1_2.5_3", [0, 5], [1, 2.5, 3]),
+    ("3档_0_5_1_2_4", [0, 5], [1, 2, 4]),
+    ("3档_0_7_1_2_3", [0, 7], [1, 2, 3]),
+    ("3档_0_7_0.5_2_3", [0, 7], [0.5, 2, 3]),
+    ("3档_0_7_1_2_4", [0, 7], [1, 2, 4]),
+    ("3档_0_3_1_2_3", [0, 3], [1, 2, 3]),
+    ("3档_0_10_1_2_3", [0, 10], [1, 2, 3]),
+    ("3档_0_5_1.5_2.5_3.5", [0, 5], [1.5, 2.5, 3.5]),
+    ("3档_0_5_0.5_1.5_2.5", [0, 5], [0.5, 1.5, 2.5]),
+    ("3档_0_7_0.5_1.5_2.5", [0, 7], [0.5, 1.5, 2.5]),
+    ("3档_0_3_0.5_1.5_2.5", [0, 3], [0.5, 1.5, 2.5]),
+    ("3档_0_5_0_2_3", [0, 5], [0, 2, 3]),
+    # ---- 4 档：低/中/高/极高 ----
+    ("4档_0_3_7_1_2_3_4", [0, 3, 7], [1, 2, 3, 4]),
+    ("4档_0_5_7_1_2_3_4", [0, 5, 7], [1, 2, 3, 4]),
+    ("4档_0_3_5_0.5_1.5_2.5_3.5", [0, 3, 5], [0.5, 1.5, 2.5, 3.5]),
+    ("4档_0_5_10_1_2_3_4", [0, 5, 10], [1, 2, 3, 4]),
+    ("4档_0_4_8_0.5_1.5_2.5_3.5", [0, 4, 8], [0.5, 1.5, 2.5, 3.5]),
+    ("4档_0_3_10_1_2_3_4", [0, 3, 10], [1, 2, 3, 4]),
+    ("4档_0_6_10_0.5_1.5_2.5_3.5", [0, 6, 10], [0.5, 1.5, 2.5, 3.5]),
+    ("4档_0_5_8_1_2_3_4", [0, 5, 8], [1, 2, 3, 4]),
+    # ---- 5 档：更细的高段 ----
+    ("5档_0_3_5_7_1_2_3_4_5", [0, 3, 5, 7], [1, 2, 3, 4, 5]),
+    ("5档_0_5_7_10_0.5_1.5_2.5_3.5_4.5", [0, 5, 7, 10], [0.5, 1.5, 2.5, 3.5, 4.5]),
+]
+
+# 含止损 / 低段特殊处理候选
+STOP_SPECS: list[tuple[str, list[float], list[float], str]] = [
+    # ---- 3 档：深跌止损 + 低段反弹 + 高段 ----
+    ("止损3档_-3_0_-2_1_2", [-3, 0], [-2, 1, 2], FAMILY_STOP),
+    ("止损3档_-5_0_-2_1_2", [-5, 0], [-2, 1, 2], FAMILY_STOP),
+    ("止损3档_-5_0_-3_1_2", [-5, 0], [-3, 1, 2], FAMILY_STOP),
+    ("止损3档_-7_0_-3_1_2", [-7, 0], [-3, 1, 2], FAMILY_STOP),
+    ("止损3档_-5_0_-5_1_2", [-5, 0], [-5, 1, 2], FAMILY_STOP),
+    ("止损3档_-3_0_-2_1_3", [-3, 0], [-2, 1, 3], FAMILY_STOP),
+    # ---- 4 档：止损 + 中段/高段细分 ----
+    ("止损4档_-5_0_5_-2_1_2_3", [-5, 0, 5], [-2, 1, 2, 3], FAMILY_STOP),
+    ("止损4档_-5_0_7_-2_1_2_3", [-5, 0, 7], [-2, 1, 2, 3], FAMILY_STOP),
+    ("止损4档_-3_0_7_-2_1_2_3", [-3, 0, 7], [-2, 1, 2, 3], FAMILY_STOP),
+    ("止损4档_-7_0_7_-3_1_2_3", [-7, 0, 7], [-3, 1, 2, 3], FAMILY_STOP),
+    ("止损4档_-5_0_5_-5_1_2_3", [-5, 0, 5], [-5, 1, 2, 3], FAMILY_STOP),
+    ("止损4档_-5_0_7_-3_1_2_4", [-5, 0, 7], [-3, 1, 2, 4], FAMILY_STOP),
+    # ---- 5 档：止损 + 低/中/高/极高 ----
+    ("止损5档_-5_0_5_7_-2_1_2_3_4", [-5, 0, 5, 7], [-2, 1, 2, 3, 4], FAMILY_STOP),
+    ("止损5档_-5_0_3_7_-2_1_2_3_4", [-5, 0, 3, 7], [-2, 1, 2, 3, 4], FAMILY_STOP),
+    ("止损5档_-5_0_5_10_-2_1_2_3_4", [-5, 0, 5, 10], [-2, 1, 2, 3, 4], FAMILY_STOP),
+    ("止损5档_-7_0_5_7_-3_1_2_3_4", [-7, 0, 5, 7], [-3, 1, 2, 3, 4], FAMILY_STOP),
+    # ---- 深跌段不认赔，要求小反弹 ----
+    ("深跌反弹_-5_0_5_1.5_1_2_3", [-5, 0, 5], [1.5, 1, 2, 3], FAMILY_REBOUND),
+    ("深跌反弹_-7_0_7_1.5_1_2_3", [-7, 0, 7], [1.5, 1, 2, 3], FAMILY_REBOUND),
+    # ---- 低段目标 -10%，近似 T+2 开盘无条件卖出 ----
+    ("开盘卖_-10_0_5_-10_2_3", [0, 5], [-10, 2, 3], FAMILY_OPEN),
+    ("开盘卖_-10_0_7_-10_2_3", [0, 7], [-10, 2, 3], FAMILY_OPEN),
+    ("开盘卖_-10_0_5_7_-10_2_3_4", [0, 5, 7], [-10, 2, 3, 4], FAMILY_OPEN),
+]
+
+EXIT_TIERS_GRID: list[tuple[str, tuple, str]] = [
+    ("现行默认4档", DEFAULT_EXIT_TIERS, FAMILY_BASELINE),
+]
+EXIT_TIERS_GRID += [
+    (f"固定{rate:g}%", tiers_from_scalar(rate / 100.0), FAMILY_FIXED)
+    for rate in FIXED_RATES_PCT
+]
+EXIT_TIERS_GRID += [
+    (name, tiers_pct(bounds, rates), FAMILY_POSITIVE)
+    for name, bounds, rates in POSITIVE_SPECS
+]
+EXIT_TIERS_GRID += [
+    (name, tiers_pct(bounds, rates), family)
+    for name, bounds, rates, family in STOP_SPECS
+]
+
+# 参考分档：用于冻结样本集合。分档只影响卖出规则，不改变筛选样本；
+# 但缺失 T+1 收盘价的样本在固定阈值下可交易、在多档下不可交易，故用参考分档统一。
+REFERENCE_SCHEME = "现行默认4档"
+VERIFY_SCHEMES = ("固定0%", "固定8%")
+
+# T+1 买入低开区间候选：(名称, 区间, 说明)
+# 区间为闭区间，按原始价 (open_raw(T+1) - close_raw(T)) / close_raw(T) 判定。
+ENTRY_GAP_GRID: list[tuple[str, tuple[float, float], str]] = [
+    ("全区间", (-0.11, 0.11), "全部低开/高开样本"),
+    ("高开_全部", (0.0, 0.11), "T+1 开盘不低于 T 日收盘"),
+    ("高开_0~3", (0.0, 0.03), "轻微高开"),
+    ("高开_3~11", (0.03, 0.11), "明显高开"),
+    ("低开_全部", (-0.11, 0.0), "全部低开"),
+    ("低开_深", (-0.11, -0.06), "深度低开"),
+    ("低开_中", (-0.06, -0.02), "中度低开"),
+    ("低开_中深", (-0.06, -0.04), "中度低开的深段（嵌套）"),
+    ("低开_中浅", (-0.04, -0.02), "中度低开的浅段（嵌套）"),
+    ("低开_浅", (-0.02, 0.0), "轻微低开"),
+    ("低开_中+浅", (-0.06, 0.0), "中度+轻微低开（嵌套）"),
+]
+
+LOW_SUPPORT_OPTIONS: list[tuple[bool, str]] = [
+    (True, "要求"),
+    (False, "不要求"),
+]
+LOW_SUPPORT_LABELS = {value: label for value, label in LOW_SUPPORT_OPTIONS}
+# ==============================================================================
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="limit_up_shakeout 现金收益网格搜索：止盈分档 × T+1 买入低开区间"
+        description=(
+            "limit_up_shakeout 现金收益网格搜索："
+            "止盈分档 × T+1 买入低开区间 × 是否要求最低价支撑"
+        )
     )
     parser.add_argument(
         "--start", default=DEFAULT_START, help=f"命中日起始，默认 {DEFAULT_START}"
     )
     parser.add_argument(
-        "--end", default=DEFAULT_END,
+        "--end",
+        default=DEFAULT_END,
         help=f"命中日结束，默认 {DEFAULT_END}，即命中表最新日期",
     )
     parser.add_argument(
-        "--position", type=float, default=DEFAULT_POSITION,
+        "--position",
+        type=float,
+        default=DEFAULT_POSITION,
         help=f"每个样本投入资金上限，默认 {DEFAULT_POSITION:,.0f}",
     )
     parser.add_argument(
-        "--lot-mode", choices=("nearest", "floor"), default=DEFAULT_LOT_MODE,
+        "--lot-mode",
+        choices=("nearest", "floor"),
+        default=DEFAULT_LOT_MODE,
         help="手数取整：nearest=最接近预算，floor=不超过预算",
     )
     parser.add_argument(
-        "--max-delay-days", type=int, default=DEFAULT_MAX_DELAY_DAYS,
+        "--max-delay-days",
+        type=int,
+        default=DEFAULT_MAX_DELAY_DAYS,
         help=f"尾盘跌停后最多顺延的交易日数，默认 {DEFAULT_MAX_DELAY_DAYS}",
     )
     parser.add_argument(
-        "--commission", type=float, default=DEFAULT_COMMISSION,
+        "--commission",
+        type=float,
+        default=DEFAULT_COMMISSION,
         help=f"佣金率，默认 {DEFAULT_COMMISSION}",
     )
     parser.add_argument(
-        "--min-commission", type=float, default=DEFAULT_MIN_COMMISSION,
+        "--min-commission",
+        type=float,
+        default=DEFAULT_MIN_COMMISSION,
         help=f"最低佣金，默认 {DEFAULT_MIN_COMMISSION:,.0f} 元",
     )
     parser.add_argument(
-        "--stamp", type=float, default=DEFAULT_STAMP,
+        "--stamp",
+        type=float,
+        default=DEFAULT_STAMP,
         help=f"印花税率（卖出），默认 {DEFAULT_STAMP}",
     )
     parser.add_argument(
-        "--transfer", type=float, default=DEFAULT_TRANSFER,
+        "--transfer",
+        type=float,
+        default=DEFAULT_TRANSFER,
         help=f"过户费率（双边），默认 {DEFAULT_TRANSFER}",
     )
     parser.add_argument(
-        "--slippage", type=float, default=DEFAULT_SLIPPAGE,
+        "--slippage",
+        type=float,
+        default=DEFAULT_SLIPPAGE,
         help=f"单边滑点，默认 {DEFAULT_SLIPPAGE}",
     )
     parser.add_argument(
-        "--report", dest="generate_report", action="store_true",
+        "--min-samples",
+        type=int,
+        default=MIN_SAMPLES_FOR_RANKING,
+        help=f"排名/报告纳入的最小样本数，默认 {MIN_SAMPLES_FOR_RANKING}",
+    )
+    parser.add_argument(
+        "--top-trades",
+        type=int,
+        default=DEFAULT_TRADES_TOP_N,
+        help=f"all_trades.csv 写出多少个最佳组合，默认 {DEFAULT_TRADES_TOP_N}",
+    )
+    parser.add_argument(
+        "--report",
+        dest="generate_report",
+        action="store_true",
         help="生成 report.md / CSV（默认开启）",
     )
     parser.add_argument(
-        "--no-report", dest="generate_report", action="store_false",
+        "--no-report",
+        dest="generate_report",
+        action="store_false",
         help="只打印控制台，不写报告文件",
     )
     parser.set_defaults(generate_report=DEFAULT_GENERATE_REPORT)
@@ -406,6 +366,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--output-dir", default="outputs", help="报告输出根目录，默认 outputs"
     )
     return parser.parse_args(argv)
+
+
+# ==============================================================================
+# 格式化与表格
+# ==============================================================================
 
 
 def fmt_pct(value: float | None, signed: bool = True) -> str:
@@ -420,10 +385,10 @@ def fmt_money(value: float | None) -> str:
     return f"{value:,.2f}"
 
 
-def fmt_num(value: float | None) -> str:
+def fmt_num(value: float | None, digits: int = 2) -> str:
     if value is None or pd.isna(value):
         return "-"
-    return f"{value:.2f}"
+    return f"{value:,.{digits}f}"
 
 
 def fmt_range(value: tuple[float, float]) -> str:
@@ -438,7 +403,9 @@ def md_table(rows: list[dict], columns: list[str]) -> str:
         "|" + "|".join(["---"] * len(columns)) + "|",
     ]
     for row in rows:
-        lines.append("| " + " | ".join(str(row.get(c, "")) for c in columns) + " |")
+        lines.append(
+            "| " + " | ".join(str(row.get(column, "")) for column in columns) + " |"
+        )
     return "\n".join(lines)
 
 
@@ -454,17 +421,20 @@ def with_retry(fn, desc: str, attempts: int = 3, wait: float = 8.0):
             time.sleep(wait)
 
 
+# ==============================================================================
+# 行情预取与逐笔分析列
+# ==============================================================================
+
+
 def preload_delay_cache(
-    frozen_inputs: dict[tuple[str, str], pd.DataFrame],
+    frozen_inputs: dict[tuple[str, bool], pd.DataFrame],
     calendar: list[str],
     max_delay_days: int,
 ) -> dict:
     """预取所有可能触发跌停顺延的 (代码, 日期) 行情行，供 calc_trades 注入。
 
-    候选 = 卖出日（T+2）收盘跌停的样本；该标志来自价格本身、与分档和 delta
-    均无关，是任何组合下顺延查询的完全超集。把候选后续 max_delay_days 个交易日
-    的行情一次性批量拉齐，数据库里不存在的键也记 None，保证组合循环阶段
-    零数据库访问（不受网络抖动影响）。
+    候选 = 卖出日（T+2）收盘跌停的样本；该标志来自价格本身、与分档无关，
+    是任何组合下顺延查询的完全超集。
     """
     date_pos = {d: i for i, d in enumerate(calendar)}
     wanted: set[tuple[str, str]] = set()
@@ -516,8 +486,14 @@ def preload_delay_cache(
                 "trade_date": row["trade_date"],
                 **{
                     col: pd.to_numeric(row.get(col), errors="coerce")
-                    for col in ("open", "high", "close", "pre_close",
-                                "adj_factor", "down_limit")
+                    for col in (
+                        "open",
+                        "high",
+                        "close",
+                        "pre_close",
+                        "adj_factor",
+                        "down_limit",
+                    )
                 },
             }
     for key in wanted:
@@ -527,39 +503,33 @@ def preload_delay_cache(
     return cache
 
 
-def fetch_by_code_dates(
+def fetch_by_code_date_pairs(
     table: str,
     columns: list[str],
-    codes: list[str],
-    dates: list[str],
+    pairs,
+    chunk_size: int = 5000,
 ) -> pd.DataFrame:
-    """按 (代码集合 × 日期集合) 分块批量查询 daily / daily_basic 的指定列。"""
-    if not codes or not dates:
+    pairs = list(dict.fromkeys((str(code), str(date)) for code, date in pairs))
+    if not pairs:
         return pd.DataFrame(columns=["ts_code", "trade_date", *columns])
     frames = []
-    date_ph = ",".join(["%s"] * len(dates))
     select_cols = ", ".join(["ts_code", "trade_date", *columns])
-    for i in range(0, len(codes), 500):
-        chunk = codes[i : i + 500]
-        code_ph = ",".join(["%s"] * len(chunk))
-        frames.append(
-            with_retry(
-                lambda: db.read_df(
-                    f"SELECT {select_cols} FROM {table} "
-                    f"WHERE ts_code IN ({code_ph}) AND trade_date IN ({date_ph})",
-                    (*chunk, *dates),
-                ),
-                f"读取 {table} 分析列",
-            )
+    for i in range(0, len(pairs), chunk_size):
+        chunk = pairs[i : i + chunk_size]
+        tuples = " OR ".join(["(ts_code=%s AND trade_date=%s)"] * len(chunk))
+        params = [item for pair in chunk for item in pair]
+        frame = with_retry(
+            lambda: db.read_df(
+                f"SELECT {select_cols} FROM {table} WHERE {tuples}",
+                params,
+            ),
+            f"读取 {table}",
         )
-    out = pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
-    if out.empty:
+        if not frame.empty:
+            frames.append(frame)
+    if not frames:
         return pd.DataFrame(columns=["ts_code", "trade_date", *columns])
-    out["ts_code"] = out["ts_code"].astype(str)
-    out["trade_date"] = out["trade_date"].astype(str)
-    for col in columns:
-        out[col] = pd.to_numeric(out[col], errors="coerce")
-    return out
+    return pd.concat(frames, ignore_index=True)
 
 
 def build_enrichment(
@@ -568,19 +538,7 @@ def build_enrichment(
     start: str,
     end: str,
 ) -> pd.DataFrame:
-    """为逐笔明细构建分析列，按 (命中日, 代码) 键返回：
-
-    - 买入日低开(%)：`open(T+1) / 除权后昨收 - 1` 的百分数（低开 3.3 个点记 -3.3，
-      与样本筛选的低开条件同口径）；
-    - 行业：命中表 `hit_limit_up_shakeout.industry` 快照；
-    - 买入日流通市值(万元)：T+1 日 `daily_basic.circ_mv`；
-    - 量能比(T/T-1)：T 日成交量 / T-1 日成交量（与策略“放量”条件同口径，单位手、
-      比值无量纲）；
-    - 涨停日K线实体(%)：`(T-1 收盘 - T-1 开盘) / T-1 开盘 × 100`，T-1 即涨停日。
-    """
-    codes = sorted(base_samples["ts_code"].dropna().astype(str).unique())
-    hit_dates = sorted(set(base_samples["hit_date"].dropna().astype(str)))
-
+    """为逐笔明细构建分析列，按 (命中日, 代码) 键返回。"""
     # 涨停日 K 线实体：T-1 开盘/收盘（不复权），从已加载行情取
     prev_px = prices[["ts_code", "trade_date", "open", "close"]].rename(
         columns={"trade_date": "prev_date", "open": "prev_open", "close": "prev_close"}
@@ -591,26 +549,34 @@ def build_enrichment(
     body_pct = (body["prev_close"] - body["prev_open"]) / body["prev_open"] * 100.0
 
     # 量能比：T 与 T-1 的成交量
-    prev_dates = sorted(set(base_samples["prev_date"].dropna().astype(str)))
-    vol_df = fetch_by_code_dates(
-        "daily", ["vol"], codes, sorted(set(hit_dates) | set(prev_dates))
+    vol_df = fetch_by_code_date_pairs(
+        "daily",
+        ["vol"],
+        list(zip(base_samples["ts_code"], base_samples["hit_date"]))
+        + list(zip(base_samples["ts_code"], base_samples["prev_date"])),
     )
     vol_t = base_samples[["ts_code", "hit_date"]].merge(
         vol_df.rename(columns={"trade_date": "hit_date", "vol": "vol_t"}),
-        on=["ts_code", "hit_date"], how="left",
+        on=["ts_code", "hit_date"],
+        how="left",
     )["vol_t"]
     vol_prev = base_samples[["ts_code", "prev_date"]].merge(
         vol_df.rename(columns={"trade_date": "prev_date", "vol": "vol_prev"}),
-        on=["ts_code", "prev_date"], how="left",
+        on=["ts_code", "prev_date"],
+        how="left",
     )["vol_prev"]
     vol_ratio = (vol_t / vol_prev).replace([np.inf, -np.inf], np.nan)
 
     # T+1 流通市值（万元）
-    t1_dates = sorted(set(base_samples["t1_date"].dropna().astype(str)))
-    mv_df = fetch_by_code_dates("daily_basic", ["circ_mv"], codes, t1_dates)
+    mv_df = fetch_by_code_date_pairs(
+        "daily_basic",
+        ["circ_mv"],
+        zip(base_samples["ts_code"], base_samples["t1_date"]),
+    )
     circ_mv = base_samples[["ts_code", "t1_date"]].merge(
         mv_df.rename(columns={"trade_date": "t1_date"}),
-        on=["ts_code", "t1_date"], how="left",
+        on=["ts_code", "t1_date"],
+        how="left",
     )["circ_mv"]
 
     # 行业快照（取命中表自身的 industry，保留命中当时的分类）
@@ -630,7 +596,7 @@ def build_enrichment(
         {
             "hit_date": base_samples["hit_date"].astype(str).to_numpy(),
             "ts_code": base_samples["ts_code"].astype(str).to_numpy(),
-            "买入日低开(%)": (
+            "买入日高开比例(原始价,%)": (
                 pd.to_numeric(base_samples["entry_gap"], errors="coerce") * 100.0
             ).to_numpy(),
             "涨停日K线实体(%)": body_pct.to_numpy(),
@@ -640,9 +606,15 @@ def build_enrichment(
     )
     enrich = enrich.merge(
         industry_df[["hit_date", "ts_code", "industry"]],
-        on=["hit_date", "ts_code"], how="left",
+        on=["hit_date", "ts_code"],
+        how="left",
     ).rename(columns={"industry": "行业"})
     return enrich
+
+
+# ==============================================================================
+# 指标与拆解
+# ==============================================================================
 
 
 def combo_metrics(
@@ -652,8 +624,7 @@ def combo_metrics(
     tiers: tuple,
     entry_name: str,
     entry_gap: tuple[float, float],
-    delta: float,
-    delta_name: str,
+    require_low_support: bool,
     trades: pd.DataFrame,
     args: argparse.Namespace,
 ) -> dict:
@@ -662,15 +633,26 @@ def combo_metrics(
     stats_pnl = cash.stats(realized["net_pnl"])
     stats_ret = cash.stats(realized["net_return"])
     total_pnl = float(realized["net_pnl"].sum()) if len(realized) else 0.0
+    std_ret = stats_ret.get("标准差")
+    mean_ret = stats_ret.get("平均")
+    se_ret = (
+        float(std_ret) / np.sqrt(len(realized))
+        if std_ret is not None and len(realized) > 0
+        else None
+    )
+    t_ret = (
+        float(mean_ret) / se_ret
+        if mean_ret is not None and se_ret not in (None, 0)
+        else None
+    )
     return {
         "组合": combo_id,
         "分档": tier_name,
         "族": family,
         "tiers": tiers,
-        "低开": entry_name,
+        "低开区间": entry_name,
         "entry_gap": entry_gap,
-        "delta": delta,
-        "delta名": delta_name,
+        "要求最低价支撑": bool(require_low_support),
         "样本数": len(trades),
         "实际买入": int((trades["shares"] > 0).sum()),
         "买入失败": buy_fail,
@@ -682,8 +664,11 @@ def combo_metrics(
         "未卖出": len(trades) - len(realized) - buy_fail,
         "净盈亏合计": total_pnl,
         "平均净盈亏": stats_pnl.get("平均"),
-        "平均净收益率": stats_ret.get("平均"),
+        "平均净收益率": mean_ret,
         "中位数": stats_ret.get("中位数"),
+        "标准差": std_ret,
+        "标准误": se_ret,
+        "t值": t_ret,
         "胜率": stats_pnl.get("胜率"),
         "盈亏比": stats_pnl.get("盈亏比"),
         "最小收益率": stats_ret.get("最小"),
@@ -758,176 +743,665 @@ def sell_mode_rows(trades: pd.DataFrame) -> list[dict]:
     return rows
 
 
+# ==============================================================================
+# 主效应 / 配对差异
+# ==============================================================================
+
+
+def _mean(values) -> float | None:
+    values = [v for v in values if v is not None and not pd.isna(v)]
+    return float(np.mean(values)) if values else None
+
+
+def _median(values) -> float | None:
+    values = [v for v in values if v is not None and not pd.isna(v)]
+    return float(np.median(values)) if values else None
+
+
+def main_effect_rows(
+    results: list[dict], key: str, min_samples: int = 0
+) -> list[dict]:
+    groups: dict[str, list[dict]] = {}
+    for row in results:
+        if row["样本数"] < min_samples:
+            continue
+        groups.setdefault(str(row[key]), []).append(row)
+    rows = []
+    for value, items in groups.items():
+        valid_means = [
+            item["平均净收益率"]
+            for item in items
+            if item["平均净收益率"] is not None
+            and not pd.isna(item["平均净收益率"])
+        ]
+        wins = [item["胜率"] for item in items if item["胜率"] is not None]
+        samples = [item["样本数"] for item in items if item["样本数"]]
+        row = {
+            key: value,
+            "组合数": len(items),
+            "平均净收益率": _mean(valid_means),
+            "中位净收益率": _median(valid_means),
+            "正收益组合占比": (
+                float(np.mean([m > 0 for m in valid_means]))
+                if valid_means
+                else None
+            ),
+            "平均胜率": _mean(wins),
+            "平均样本数": _mean(samples),
+            "最佳组合均值": max(valid_means) if valid_means else None,
+            "最差组合均值": min(valid_means) if valid_means else None,
+        }
+        if key == "分档":
+            row["族"] = items[0].get("族", "")
+        rows.append(row)
+    rows.sort(
+        key=lambda row: (
+            row["平均净收益率"] is None,
+            -(row["平均净收益率"] or 0.0),
+        )
+    )
+    return rows
+
+
+def low_support_effect_rows(
+    results: list[dict], min_samples: int = 0
+) -> tuple[list[dict], list[dict]]:
+    """返回 (配对差异明细, 按低开区间汇总)。
+
+    只比较“要求支撑”和“不要求支撑”都达到 min_samples 的配对，避免
+    1~2 笔样本的极端组合主导支撑效应。
+    """
+    pairs: dict[tuple[str, str], dict[bool, dict]] = {}
+    for row in results:
+        key = (row["分档"], row["低开区间"])
+        pairs.setdefault(key, {})[bool(row["要求最低价支撑"])] = row
+
+    detail = []
+    for (tier_name, entry_name), pair in pairs.items():
+        if True not in pair or False not in pair:
+            continue
+        yes = pair[True]
+        no = pair[False]
+        if yes["平均净收益率"] is None or no["平均净收益率"] is None:
+            continue
+        if yes["样本数"] < min_samples or no["样本数"] < min_samples:
+            continue
+        detail.append(
+            {
+                "分档": tier_name,
+                "族": yes["族"],
+                "低开区间": entry_name,
+                "要求均值": yes["平均净收益率"],
+                "不要求均值": no["平均净收益率"],
+                "差异(要求-不要求)": yes["平均净收益率"] - no["平均净收益率"],
+                "要求样本数": yes["样本数"],
+                "不要求样本数": no["样本数"],
+                "样本减少": no["样本数"] - yes["样本数"],
+            }
+        )
+
+    summary = []
+    for entry_name in [name for name, _rng, _note in ENTRY_GAP_GRID]:
+        rows = [row for row in detail if row["低开区间"] == entry_name]
+        diffs = [row["差异(要求-不要求)"] for row in rows]
+        if not rows:
+            continue
+        summary.append(
+            {
+                "低开区间": entry_name,
+                "配对数": len(rows),
+                "平均差异": _mean(diffs),
+                "中位差异": _median(diffs),
+                "要求更优占比": float(np.mean([d > 0 for d in diffs])),
+                "最小差异": min(diffs),
+                "最大差异": max(diffs),
+                "平均样本减少": _mean([row["样本减少"] for row in rows]),
+            }
+        )
+    summary.sort(key=lambda row: -(row["平均差异"] or 0.0))
+    detail.sort(key=lambda row: -(row["差异(要求-不要求)"] or 0.0))
+    return detail, summary
+
+
+def best_by_entry_support(results: list[dict], min_samples: int) -> list[dict]:
+    rows = []
+    for entry_name, entry_gap, _note in ENTRY_GAP_GRID:
+        for support, support_label in LOW_SUPPORT_OPTIONS:
+            subset = [
+                row
+                for row in results
+                if row["低开区间"] == entry_name
+                and bool(row["要求最低价支撑"]) == support
+                and row["平均净收益率"] is not None
+                and not pd.isna(row["平均净收益率"])
+            ]
+            qualified = [row for row in subset if row["样本数"] >= min_samples]
+            pool = qualified or subset
+            if not pool:
+                continue
+            best = max(pool, key=lambda row: row["平均净收益率"])
+            rows.append(
+                {
+                    "低开区间": entry_name,
+                    "区间": fmt_range(entry_gap),
+                    "最低价支撑": support_label,
+                    "最佳分档": best["分档"],
+                    "族": best["族"],
+                    "平均净收益率": best["平均净收益率"],
+                    "中位数": best["中位数"],
+                    "t值": best.get("t值"),
+                    "胜率": best["胜率"],
+                    "样本数": best["样本数"],
+                    "净盈亏合计": best["净盈亏合计"],
+                    "是否达到最小样本": best["样本数"] >= min_samples,
+                }
+            )
+    return rows
+
+
+def family_rows(results: list[dict], min_samples: int = 0) -> list[dict]:
+    return main_effect_rows(results, "族", min_samples)
+
+
+# ==============================================================================
+# 报告
+# ==============================================================================
+
+
 def build_report(
     args: argparse.Namespace,
     start: str,
     end: str,
     results: list[dict],
+    ranked: list[dict],
+    tier_effect: list[dict],
+    entry_effect: list[dict],
+    family_effect: list[dict],
+    support_detail: list[dict],
+    support_summary: list[dict],
+    best_entry_support: list[dict],
     yearly: dict[str, list[dict]],
     tier_breakdown: dict[str, list[dict]],
     sell_mode: dict[str, list[dict]],
-    frozen_stats: dict[tuple[str, str], dict],
+    sample_stats: dict[tuple[str, bool], dict],
     verify_diffs: dict[str, int],
     generated_at: str,
 ) -> str:
-    TOP_SHOWN = 30  # md 报告只展示 Top 组合，全量见 grid_results.csv
-    delta_first, delta_last = DELTA_GRID[0][0], DELTA_GRID[-1][0]
-    entry_first = ENTRY_GAP_GRID[0][0]
-    years = sorted({row["年份"] for rows in yearly.values() for row in rows})
-    by_avg = sorted(
-        results, key=lambda r: (r["平均净收益率"] is None, r["平均净收益率"] or 0.0),
-        reverse=True,
+    lines: list[str] = []
+    lines.append("# limit_up_shakeout 现金收益网格搜索")
+    lines.append("")
+    lines.append(f"- 生成时间：{generated_at}")
+    lines.append(f"- 统计区间：`{start}` ~ `{end}`")
+    lines.append(
+        f"- 固定筛选：T 日高开 `{fmt_range(DEFAULT_GAP)}`；"
+        f"T 日收盘涨跌幅 `{fmt_range(DEFAULT_CLOSE_CHG)}`；"
+        f"近 N 日涨幅 `{cash.fmt_n_days_rise(DEFAULT_N_DAYS_RISE)}`"
     )
-    index = {r["组合"]: r for r in results}
-    top = by_avg[:TOP_SHOWN]
+    lines.append("- 买入：T+1 原始开盘价（`delta=0`，不再搜索限价深度）")
+    lines.append(
+        f"- 最低价支撑基准默认：{'要求' if DEFAULT_REQUIRE_LOW_SUPPORT else '不要求'}"
+        "；网格同时搜索 True / False"
+    )
+    lines.append(
+        f"- 网格：{len(EXIT_TIERS_GRID)} 个止盈分档 × "
+        f"{len(ENTRY_GAP_GRID)} 个低开区间 × "
+        f"{len(LOW_SUPPORT_OPTIONS)} 个最低价支撑条件 = "
+        f"**{len(EXIT_TIERS_GRID) * len(ENTRY_GAP_GRID) * len(LOW_SUPPORT_OPTIONS):,}** 个组合"
+    )
+    lines.append(
+        f"- 每笔预算：`{args.position:,.0f}` 元；手数模式：`{args.lot_mode}`；"
+        f"佣金：`{args.commission:.5%}`（最低 {args.min_commission:,.0f} 元）；"
+        f"印花税：`{args.stamp:.3%}`；过户费：`{args.transfer:.4%}`；"
+        f"滑点：`{args.slippage:.2%}`"
+    )
+    lines.append(
+        f"- 有效组合数：`{len(results):,}` / `{len(EXIT_TIERS_GRID) * len(ENTRY_GAP_GRID) * len(LOW_SUPPORT_OPTIONS):,}`"
+        "（样本为空的区间会被跳过）"
+    )
+    lines.append(
+        f"- 排名最小样本数：`{args.min_samples}`；明细组合数：`{args.top_trades}`"
+    )
+    lines.append(
+        "- 样本冻结：同一（低开区间 × 最低价支撑）下所有分档共用参考分档 "
+        f"`{REFERENCE_SCHEME}` 筛出的样本，保证离场规则对比的样本集合一致。"
+    )
+    lines.append("")
+    lines.append("> 这是样本内网格搜索。组合数很大，单个最优组合存在过拟合风险；"
+                 "请优先看分档族/低开区间的主效应、配对差异和年度稳定性。")
+    lines.append("")
 
-    overview_rows = []
-    for r in top:
-        overview_rows.append(
+    # 1. 网格定义
+    lines.append("## 1. 网格定义")
+    lines.append("")
+    lines.append("### 1.1 止盈分档")
+    lines.append("")
+    tier_rows = [
+        {
+            "名称": name,
+            "族": family,
+            "分档函数": format_tiers_summary(tiers),
+        }
+        for name, tiers, family in EXIT_TIERS_GRID
+    ]
+    lines.append(md_table(tier_rows, ["名称", "族", "分档函数"]))
+    lines.append("")
+    lines.append("### 1.2 T+1 买入低开区间")
+    lines.append("")
+    gap_rows = [
+        {
+            "名称": name,
+            "区间": fmt_range(rng),
+            "说明": note,
+            "样本数(要求支撑)": sample_stats.get((name, True), {}).get("samples", "-"),
+            "样本数(不要求支撑)": sample_stats.get((name, False), {}).get("samples", "-"),
+        }
+        for name, rng, note in ENTRY_GAP_GRID
+    ]
+    lines.append(
+        md_table(
+            gap_rows,
+            ["名称", "区间", "说明", "样本数(要求支撑)", "样本数(不要求支撑)"],
+        )
+    )
+    lines.append("")
+    lines.append(
+        "> 区间按闭区间处理（`>= lo - eps` 且 `<= hi + eps`），相邻区间在边界上可能重叠；"
+        "核心非重叠分区为 `高开_0~3` / `高开_3~11` / `低开_深` / `低开_中深` / "
+        "`低开_中浅` / `低开_浅`；`低开_中`、`低开_中+浅`、`高开_全部`、`低开_全部`、"
+        "`全区间` 是嵌套/汇总区间，用于敏感性分析，不应视为独立假设。"
+    )
+    lines.append("")
+    lines.append("### 1.3 最低价支撑条件")
+    lines.append("")
+    lines.append(
+        "- `要求`：后复权 `low(T) >= close(T-1)`，与原策略默认口径一致。\n"
+        "- `不要求`：去掉该条件，观察放宽样本池后收益和样本量的变化。"
+    )
+    lines.append("")
+
+    # 2. 样本量
+    lines.append("## 2. 样本量")
+    lines.append("")
+    sample_rows = []
+    for entry_name, _rng, _note in ENTRY_GAP_GRID:
+        yes = sample_stats.get((entry_name, True), {})
+        no = sample_stats.get((entry_name, False), {})
+        yes_n = yes.get("samples")
+        no_n = no.get("samples")
+        sample_rows.append(
             {
-                "组合": r["组合"],
-                "族": r["族"],
-                "止盈分档": format_tiers_summary(r["tiers"]),
-                "T+1低开": fmt_range(r["entry_gap"]),
-                "delta": f"{r['delta']:g}%",
-                "样本数": r["样本数"],
-                "净盈亏合计": fmt_money(r["净盈亏合计"]),
-                "平均净收益率": fmt_pct(r["平均净收益率"]),
-                "中位数": fmt_pct(r["中位数"]),
-                "胜率": fmt_pct(r["胜率"], signed=False),
-                "盈亏比": fmt_num(r["盈亏比"]),
-                "收益/预算": fmt_pct(r["收益/预算"]),
-                "延期": r["延期卖出"],
-                "超期估值": r["超期估值"],
+                "低开区间": entry_name,
+                "要求支撑样本": yes_n if yes_n is not None else "-",
+                "不要求支撑样本": no_n if no_n is not None else "-",
+                "放宽后增加": (
+                    no_n - yes_n
+                    if yes_n is not None and no_n is not None
+                    else "-"
+                ),
+                "要求支撑减少占比": (
+                    f"{(no_n - yes_n) / no_n:.1%}"
+                    if no_n
+                    else "-"
+                ),
             }
         )
-
-    def year_cell(rows: list[dict], year: str) -> str:
-        for row in rows:
-            if row["年份"] == year:
-                return f"{fmt_pct(row['平均净收益率'])} ({row['已卖出']})"
-        return "-"
-
-    matrix_rows = []
-    for r in top:
-        rows = yearly[r["组合"]]
-        positive_years = sum(1 for row in rows if row["净盈亏合计"] > 0)
-        matrix_rows.append(
-            {
-                "组合": r["组合"],
-                **{year: year_cell(rows, year) for year in years},
-                "正收益年数": f"{positive_years}/{len(years)}",
-            }
+    lines.append(
+        md_table(
+            sample_rows,
+            [
+                "低开区间",
+                "要求支撑样本",
+                "不要求支撑样本",
+                "放宽后增加",
+                "要求支撑减少占比",
+            ],
         )
+    )
+    lines.append("")
 
-    tier_long_rows = []
-    for r in by_avg[:10]:
-        for row in tier_breakdown[r["组合"]]:
-            tier_long_rows.append(
+    # 3. 总体排名
+    lines.append("## 3. 总体排名（达到最小样本数的组合）")
+    lines.append("")
+    if ranked:
+        top_rows = []
+        for i, row in enumerate(ranked[:30], start=1):
+            top_rows.append(
                 {
-                    "组合": r["组合"],
-                    "止盈档位": row["止盈档位"],
-                    "止盈阈值": fmt_pct(row["止盈阈值"]),
+                    "排名": i,
+                    "组合": row["组合"],
+                    "族": row["族"],
+                    "低开区间": row["低开区间"],
+                    "要求支撑": "是" if row["要求最低价支撑"] else "否",
                     "样本数": row["样本数"],
-                    "已卖出": row["已卖出"],
                     "平均净收益率": fmt_pct(row["平均净收益率"]),
+                    "中位数": fmt_pct(row["中位数"]),
+                    "t值": fmt_num(row.get("t值")),
                     "胜率": fmt_pct(row["胜率"], signed=False),
                     "净盈亏合计": fmt_money(row["净盈亏合计"]),
+                    "盈亏比": fmt_num(row["盈亏比"]),
                 }
             )
-
-    # 冻结样本与限价成交率（按 低开 × delta；留存率相对 delta=0）
-    freeze_rows = []
-    for entry_name, _rng in ENTRY_GAP_GRID:
-        base_n = (frozen_stats.get((entry_name, delta_first)) or {}).get("samples")
-        for delta_name, delta in DELTA_GRID:
-            st = frozen_stats.get((entry_name, delta_name))
-            if st is None:
-                continue
-            retention = st["samples"] / base_n if base_n else None
-            freeze_rows.append(
-                {
-                    "低开": entry_name,
-                    "delta": f"{delta:g}%",
-                    "冻结样本数": st["samples"],
-                    "限价未成交跳过": st["unfilled"],
-                    "留存率(对delta=0)": fmt_pct(retention, signed=False),
-                }
+        lines.append(
+            md_table(
+                top_rows,
+                [
+                    "排名",
+                    "组合",
+                    "族",
+                    "低开区间",
+                    "要求支撑",
+                    "样本数",
+                    "平均净收益率",
+                    "中位数",
+                    "t值",
+                    "胜率",
+                    "净盈亏合计",
+                    "盈亏比",
+                ],
             )
-
-    # 分档 × delta 矩阵（低开1，平均净收益率）；最优delta 与 最深-最浅 敏感度
-    scheme_matrix_rows = []
-    for name, _tiers, family in EXIT_TIERS_GRID:
-        row = {"分档": name, "族": family}
-        vals: dict[str, float | None] = {}
-        for delta_name, _delta in DELTA_GRID:
-            r = index.get(f"{name}×{entry_first}×{delta_name}")
-            value = r["平均净收益率"] if r else None
-            vals[delta_name] = value
-            row[delta_name] = fmt_pct(value)
-        valid = {k: v for k, v in vals.items() if v is not None}
-        if valid:
-            best_dn = max(valid, key=valid.get)
-            row["最优delta"] = f"{best_dn}（{fmt_pct(valid[best_dn])}）"
-        else:
-            row["最优delta"] = "-"
-        first_v, last_v = vals.get(delta_first), vals.get(delta_last)
-        row[f"{delta_last}-{delta_first}"] = (
-            fmt_pct(last_v - first_v)
-            if first_v is not None and last_v is not None
-            else "-"
         )
-        scheme_matrix_rows.append(row)
+    else:
+        lines.append("_没有组合达到最小样本数。_")
+    lines.append("")
+    lines.append(
+        "> `t值 = 平均净收益率 / 标准误`，仅作单组合参考；未做多重检验校正，"
+        "组合数很大时不要把 |t|>2 当作可靠显著性。"
+    )
+    lines.append("")
 
-    # delta 汇总：每个 (低开 × delta) 的族平均、对 delta=0 的主效应与最优组合
-    delta_rows = []
-    delta_effect: dict[tuple[str, str], float | None] = {}
-    for entry_name, _rng in ENTRY_GAP_GRID:
-        base_avg = {
-            r["分档"]: r["平均净收益率"]
-            for r in results
-            if r["低开"] == entry_name and r["delta名"] == delta_first
-        }
-        for delta_name, delta in DELTA_GRID:
-            subs = [
-                r for r in results
-                if r["低开"] == entry_name and r["delta名"] == delta_name
-            ]
-            if not subs:
-                continue
-            avgs = [r["平均净收益率"] or 0.0 for r in subs]
-            best = max(subs, key=lambda r: r["平均净收益率"] or 0.0)
-            diffs = [
-                r["平均净收益率"] - base_avg[r["分档"]]
-                for r in subs
-                if r["分档"] in base_avg
-                and r["平均净收益率"] is not None
-                and base_avg[r["分档"]] is not None
-            ]
-            effect = float(np.mean(diffs)) if diffs else None
-            delta_effect[(entry_name, delta_name)] = effect
-            row = {
-                "低开": entry_name,
-                "delta": f"{delta:g}%",
-                "组合数": len(subs),
-                "全档平均": fmt_pct(float(np.mean(avgs))),
-                "主效应(对delta=0)": fmt_pct(effect),
-                "最优组合": f"{best['组合']}（{fmt_pct(best['平均净收益率'])}）",
-            }
-            for family in FAMILY_ORDER:
-                fam_subs = [r for r in subs if r["族"] == family]
-                if fam_subs:
-                    row[f"{family}族平均"] = fmt_pct(
-                        float(np.mean([r["平均净收益率"] or 0.0 for r in fam_subs]))
-                    )
-            delta_rows.append(row)
-
-    mode_sections = []
-    for r in by_avg[:5]:
-        rows = sell_mode[r["组合"]]
-        if not rows:
+    # 4. 分档主效应
+    lines.append("## 4. 止盈分档主效应")
+    lines.append("")
+    lines.append(
+        "对每个分档，统计它在全部（低开区间 × 支撑条件）组合上的平均净收益率、"
+        "正收益组合占比、平均胜率等；**仅纳入样本数 ≥ "
+        f"{args.min_samples} 的组合**。用于判断“哪类分档结构”更稳健，"
+        "而不是只看单个低开区间。"
+    )
+    lines.append("")
+    tier_effect_rows = []
+    shown_tiers = set()
+    for row in tier_effect[:30] + tier_effect[-10:]:
+        if row["分档"] in shown_tiers:
             continue
-        table_rows = [
+        shown_tiers.add(row["分档"])
+        tier_effect_rows.append(
+            {
+                "分档": row["分档"],
+                "族": row["族"],
+                "组合数": row["组合数"],
+                "平均净收益率": fmt_pct(row["平均净收益率"]),
+                "中位净收益率": fmt_pct(row["中位净收益率"]),
+                "正收益组合占比": fmt_pct(row["正收益组合占比"], signed=False),
+                "平均胜率": fmt_pct(row["平均胜率"], signed=False),
+                "平均样本数": fmt_num(row["平均样本数"], 0),
+                "最佳组合": fmt_pct(row["最佳组合均值"]),
+                "最差组合": fmt_pct(row["最差组合均值"]),
+            }
+        )
+    lines.append(
+        md_table(
+            tier_effect_rows,
+            [
+                "分档",
+                "族",
+                "组合数",
+                "平均净收益率",
+                "中位净收益率",
+                "正收益组合占比",
+                "平均胜率",
+                "平均样本数",
+                "最佳组合",
+                "最差组合",
+            ],
+        )
+    )
+    lines.append("")
+    lines.append("> 表中只列前 30 + 后 10 个分档；完整结果见 `tier_main_effects.csv`。")
+    lines.append("")
+
+    # 5. 低开区间主效应
+    lines.append("## 5. 低开区间主效应")
+    lines.append("")
+    lines.append(
+        f"同样仅纳入样本数 ≥ {args.min_samples} 的组合。样本过少的区间"
+        "不会进入本表，请结合第 2 节样本量阅读。"
+    )
+    lines.append("")
+    entry_rows = []
+    for row in entry_effect:
+        entry_rows.append(
+            {
+                "低开区间": row["低开区间"],
+                "组合数": row["组合数"],
+                "平均净收益率": fmt_pct(row["平均净收益率"]),
+                "中位净收益率": fmt_pct(row["中位净收益率"]),
+                "正收益组合占比": fmt_pct(row["正收益组合占比"], signed=False),
+                "平均胜率": fmt_pct(row["平均胜率"], signed=False),
+                "平均样本数": fmt_num(row["平均样本数"], 0),
+                "最佳组合": fmt_pct(row["最佳组合均值"]),
+                "最差组合": fmt_pct(row["最差组合均值"]),
+            }
+        )
+    lines.append(
+        md_table(
+            entry_rows,
+            [
+                "低开区间",
+                "组合数",
+                "平均净收益率",
+                "中位净收益率",
+                "正收益组合占比",
+                "平均胜率",
+                "平均样本数",
+                "最佳组合",
+                "最差组合",
+            ],
+        )
+    )
+    lines.append("")
+
+    # 6. 最低价支撑影响
+    lines.append("## 6. 最低价支撑条件的影响")
+    lines.append("")
+    support_rows = []
+    diffs_all = [row["差异(要求-不要求)"] for row in support_detail]
+    if diffs_all:
+        support_rows.append(
+            {
+                "范围": "全部配对",
+                "配对数": len(diffs_all),
+                "平均差异(要求-不要求)": fmt_pct(_mean(diffs_all)),
+                "中位差异": fmt_pct(_median(diffs_all)),
+                "要求更优占比": fmt_pct(float(np.mean([d > 0 for d in diffs_all])), signed=False),
+                "最小差异": fmt_pct(min(diffs_all)),
+                "最大差异": fmt_pct(max(diffs_all)),
+            }
+        )
+    for row in support_summary:
+        support_rows.append(
+            {
+                "范围": row["低开区间"],
+                "配对数": row["配对数"],
+                "平均差异(要求-不要求)": fmt_pct(row["平均差异"]),
+                "中位差异": fmt_pct(row["中位差异"]),
+                "要求更优占比": fmt_pct(row["要求更优占比"], signed=False),
+                "最小差异": fmt_pct(row["最小差异"]),
+                "最大差异": fmt_pct(row["最大差异"]),
+            }
+        )
+    lines.append(
+        md_table(
+            support_rows,
+            [
+                "范围",
+                "配对数",
+                "平均差异(要求-不要求)",
+                "中位差异",
+                "要求更优占比",
+                "最小差异",
+                "最大差异",
+            ],
+        )
+    )
+    lines.append("")
+    lines.append(
+        f"> 配对差异仅纳入“要求/不要求”双方样本数均 ≥ {args.min_samples} 的组合。"
+        "它仍是样本内对比：要求支撑会剔除一部分样本，差异同时包含"
+        "“过滤效应”和“剩余样本构成变化”，不是纯因果效应。"
+    )
+    lines.append("")
+    if support_detail:
+        lines.append("### 6.1 配对差异最大的组合（要求支撑更优）")
+        lines.append("")
+        detail_rows = []
+        for row in support_detail[:10]:
+            detail_rows.append(
+                {
+                    "分档": row["分档"],
+                    "族": row["族"],
+                    "低开区间": row["低开区间"],
+                    "要求均值": fmt_pct(row["要求均值"]),
+                    "不要求均值": fmt_pct(row["不要求均值"]),
+                    "差异": fmt_pct(row["差异(要求-不要求)"]),
+                    "样本减少": row["样本减少"],
+                }
+            )
+        lines.append(
+            md_table(
+                detail_rows,
+                ["分档", "族", "低开区间", "要求均值", "不要求均值", "差异", "样本减少"],
+            )
+        )
+        lines.append("")
+        lines.append("### 6.2 配对差异最小的组合（要求支撑更差）")
+        lines.append("")
+        detail_rows = []
+        for row in support_detail[-10:]:
+            detail_rows.append(
+                {
+                    "分档": row["分档"],
+                    "族": row["族"],
+                    "低开区间": row["低开区间"],
+                    "要求均值": fmt_pct(row["要求均值"]),
+                    "不要求均值": fmt_pct(row["不要求均值"]),
+                    "差异": fmt_pct(row["差异(要求-不要求)"]),
+                    "样本减少": row["样本减少"],
+                }
+            )
+        lines.append(
+            md_table(
+                detail_rows,
+                ["分档", "族", "低开区间", "要求均值", "不要求均值", "差异", "样本减少"],
+            )
+        )
+        lines.append("")
+
+    # 7. 每个低开区间×支撑下的最佳分档
+    lines.append("## 7. 每个低开区间 × 支撑条件下的最佳分档")
+    lines.append("")
+    best_rows = []
+    for row in best_entry_support:
+        best_rows.append(
+            {
+                "低开区间": row["低开区间"],
+                "区间": row["区间"],
+                "要求支撑": row["最低价支撑"],
+                "最佳分档": row["最佳分档"],
+                "族": row["族"],
+                "平均净收益率": fmt_pct(row["平均净收益率"]),
+                "中位数": fmt_pct(row["中位数"]),
+                "t值": fmt_num(row.get("t值")),
+                "胜率": fmt_pct(row["胜率"], signed=False),
+                "样本数": row["样本数"],
+                "达到最小样本": "是" if row["是否达到最小样本"] else "否",
+                "净盈亏合计": fmt_money(row["净盈亏合计"]),
+            }
+        )
+    lines.append(
+        md_table(
+            best_rows,
+            [
+                "低开区间",
+                "区间",
+                "要求支撑",
+                "最佳分档",
+                "族",
+                "平均净收益率",
+                "中位数",
+                "t值",
+                "胜率",
+                "样本数",
+                "达到最小样本",
+                "净盈亏合计",
+            ],
+        )
+    )
+    lines.append("")
+
+    # 8. 分档族主效应
+    lines.append("## 8. 分档族主效应")
+    lines.append("")
+    family_rows_out = []
+    for row in family_effect:
+        family_rows_out.append(
+            {
+                "族": row["族"],
+                "组合数": row["组合数"],
+                "平均净收益率": fmt_pct(row["平均净收益率"]),
+                "中位净收益率": fmt_pct(row["中位净收益率"]),
+                "正收益组合占比": fmt_pct(row["正收益组合占比"], signed=False),
+                "平均胜率": fmt_pct(row["平均胜率"], signed=False),
+                "最佳组合": fmt_pct(row["最佳组合均值"]),
+                "最差组合": fmt_pct(row["最差组合均值"]),
+            }
+        )
+    lines.append(
+        md_table(
+            family_rows_out,
+            [
+                "族",
+                "组合数",
+                "平均净收益率",
+                "中位净收益率",
+                "正收益组合占比",
+                "平均胜率",
+                "最佳组合",
+                "最差组合",
+            ],
+        )
+    )
+    lines.append("")
+
+    # 9. 年度稳定性
+    lines.append("## 9. 年度稳定性（Top 5 组合）")
+    lines.append("")
+    if ranked:
+        top5 = ranked[:5]
+        years = sorted({row["年份"] for combo in top5 for row in yearly.get(combo["组合"], [])})
+        year_rows = []
+        for year in years:
+            row = {"年份": year}
+            for combo in top5:
+                values = [
+                    item["平均净收益率"]
+                    for item in yearly.get(combo["组合"], [])
+                    if item["年份"] == year
+                ]
+                row[combo["组合"]] = fmt_pct(values[0]) if values else "-"
+            year_rows.append(row)
+        lines.append(md_table(year_rows, ["年份", *[combo["组合"] for combo in top5]]))
+    else:
+        lines.append("_无可用组合。_")
+    lines.append("")
+
+    # 10. 卖出方式与档位拆解
+    lines.append("## 10. Top 3 组合的卖出方式与档位拆解")
+    lines.append("")
+    for combo in ranked[:3]:
+        lines.append(f"### {combo['组合']}")
+        lines.append("")
+        mode_rows = [
             {
                 "卖出方式": row["卖出方式"],
                 "样本数": row["样本数"],
@@ -935,493 +1409,267 @@ def build_report(
                 "平均净收益率": fmt_pct(row["平均净收益率"]),
                 "净盈亏合计": fmt_money(row["净盈亏合计"]),
             }
-            for row in rows
+            for row in sell_mode.get(combo["组合"], [])
         ]
-        mode_sections.append(
-            [
-                f"### {r['组合']}",
-                "",
-                md_table(table_rows, ["卖出方式", "样本数", "占比", "平均净收益率", "净盈亏合计"]),
-                "",
-            ]
+        lines.append(
+            md_table(
+                mode_rows,
+                ["卖出方式", "样本数", "占比", "平均净收益率", "净盈亏合计"],
+            )
         )
-
-    comparison_lines = []
-    for base_id, variant_id, title in COMPARISONS:
-        base, var = index.get(base_id), index.get(variant_id)
-        if not base or not var:
-            continue
-        comparison_lines.append(
-            f"- **{title}**：{variant_id} 相对 {base_id}"
-            f"（平均净收益率 {fmt_pct(base['平均净收益率'])} → {fmt_pct(var['平均净收益率'])}，"
-            f"胜率 {fmt_pct(base['胜率'], signed=False)} → {fmt_pct(var['胜率'], signed=False)}，"
-            f"净盈亏合计 {fmt_money(base['净盈亏合计'])} → {fmt_money(var['净盈亏合计'])} 元）"
+        lines.append("")
+        tier_rows = [
+            {
+                "止盈档位": row["止盈档位"],
+                "止盈阈值": fmt_pct(row["止盈阈值"], signed=False),
+                "样本数": row["样本数"],
+                "平均净收益率": fmt_pct(row["平均净收益率"]),
+                "胜率": fmt_pct(row["胜率"], signed=False),
+                "净盈亏合计": fmt_money(row["净盈亏合计"]),
+            }
+            for row in tier_breakdown.get(combo["组合"], [])
+        ]
+        lines.append(
+            md_table(
+                tier_rows,
+                ["止盈档位", "止盈阈值", "样本数", "平均净收益率", "胜率", "净盈亏合计"],
+            )
         )
+        lines.append("")
 
-    best_avg = by_avg[0]
-    best_total = max(results, key=lambda r: r["净盈亏合计"])
-    max_positive = max(
-        sum(1 for row in yearly[r["组合"]] if row["净盈亏合计"] > 0) for r in results
+    # 11. 冻结校验
+    lines.append("## 11. 冻结样本校验")
+    lines.append("")
+    lines.append(
+        f"参考分档：`{REFERENCE_SCHEME}`；校验轮廓："
+        + "、".join(f"`{name}`" for name in VERIFY_SCHEMES)
+        + "。"
     )
-    most_stable = [
-        r for r in results
-        if sum(1 for row in yearly[r["组合"]] if row["净盈亏合计"] > 0) == max_positive
-    ]
-    most_stable.sort(key=lambda r: r["平均净收益率"] or 0.0, reverse=True)
-
-    dynamic = [r for r in results if r["族"] != FAMILY_FIXED]
-    fixed = [r for r in results if r["族"] == FAMILY_FIXED]
-    best_dyn = max(dynamic, key=lambda r: r["平均净收益率"] or 0.0)
-    best_fix = max(fixed, key=lambda r: r["平均净收益率"] or 0.0)
-    dyn_minus_fix = (best_dyn["平均净收益率"] or 0.0) - (best_fix["平均净收益率"] or 0.0)
-
-    pos_on_e1 = [
-        r for r in results
-        if r["族"] == FAMILY_POSITIVE
-        and r["低开"] == entry_first
-        and r["delta名"] == delta_first
-    ]
-    neg_on_e1 = [
-        r for r in results
-        if r["族"] == FAMILY_NEGATIVE
-        and r["低开"] == entry_first
-        and r["delta名"] == delta_first
-    ]
-    family_delta = (
-        float(np.mean([r["平均净收益率"] or 0.0 for r in neg_on_e1]))
-        - float(np.mean([r["平均净收益率"] or 0.0 for r in pos_on_e1]))
-    )
-
-    entry_deltas = []
-    for name, _tiers, _family in EXIT_TIERS_GRID:
-        for delta_name, _delta in DELTA_GRID:
-            r1 = index.get(f"{name}×低开1×{delta_name}")
-            r2 = index.get(f"{name}×低开2×{delta_name}")
-            if (
-                r1 and r2
-                and r1["平均净收益率"] is not None
-                and r2["平均净收益率"] is not None
-            ):
-                entry_deltas.append(r2["平均净收益率"] - r1["平均净收益率"])
-
-    # 各 delta 下的全局最优组合（跨两个低开区间）
-    best_per_delta = []
-    for delta_name, delta in DELTA_GRID:
-        subs = [r for r in results if r["delta名"] == delta_name]
-        if not subs:
-            continue
-        best = max(subs, key=lambda r: r["平均净收益率"] or 0.0)
-        best_per_delta.append(
-            f"delta {delta:g}%：**{best['组合']}**（{fmt_pct(best['平均净收益率'])}，"
-            f"胜率 {fmt_pct(best['胜率'], signed=False)}）"
+    nonzero = {key: value for key, value in verify_diffs.items() if value}
+    if nonzero:
+        lines.append("")
+        lines.append("以下组合的独立重筛样本集合与冻结集合存在差异：")
+        lines.append("")
+        lines.append(
+            md_table(
+                [{"组合": key, "差异条数": value} for key, value in nonzero.items()],
+                ["组合", "差异条数"],
+            )
         )
-
-    # 对角线（r = delta，卖出目标相对开盘价 ≈ 不变，只加深折价）
-    def combo_avg_text(combo_id: str) -> str:
-        r = index.get(combo_id)
-        return fmt_pct(r["平均净收益率"]) if r else "-"
-
-    diagonal_fixed = " → ".join(
-        f"{delta:g}%：{combo_avg_text(f'固定{delta:g}%×{entry_first}×{delta_name}')}"
-        for delta_name, delta in DELTA_GRID
-    )
-    diagonal_ladder = " → ".join(
-        f"{scheme}@{delta_name}："
-        f"{combo_avg_text(f'{scheme}×{entry_first}×{delta_name}')}"
-        for scheme, delta_name in (
-            ("分档2", delta_first),
-            ("分档19", "d0.5"),
-            ("分档25", "d1"),
-        )
-    )
-
-    tier_grid_legend = [
-        {"名称": name, "族": family, "分段函数": format_tiers_summary(tiers)}
-        for name, tiers, family in EXIT_TIERS_GRID
-    ]
-    entry_grid_legend = [
-        {"低开": name, "区间": fmt_range(rng)} for name, rng in ENTRY_GAP_GRID
-    ]
-    delta_grid_legend = [
-        {
-            "delta": f"{delta:g}%",
-            "含义": (
-                "开盘价买入（原口径）"
-                if delta == 0
-                else f"开盘下方 {delta:g}% 限价（买入价 = (1+a-{delta:g}%)×close(T)）"
-            ),
-        }
-        for _name, delta in DELTA_GRID
-    ]
-    if verify_diffs and all(v == 0 for v in verify_diffs.values()):
-        verify_text = f"全部 {len(verify_diffs)} 项均为 0 条"
     else:
-        verify_text = (
-            "；".join(f"{k}：{v} 条" for k, v in verify_diffs.items()) or "-"
+        lines.append("")
+        lines.append("所有校验轮廓的独立重筛差异均为 0 条。")
+    lines.append("")
+
+    # 12. 结论与注意事项
+    lines.append("## 12. 结论与注意事项")
+    lines.append("")
+    if ranked:
+        best = ranked[0]
+        lines.append(
+            f"- 达到最小样本数 `{args.min_samples}` 的组合中，平均净收益率最高的是 "
+            f"`{best['组合']}`：{fmt_pct(best['平均净收益率'])}，"
+            f"中位数 {fmt_pct(best['中位数'])}，胜率 {fmt_pct(best['胜率'], signed=False)}，"
+            f"样本 {best['样本数']:,}。"
         )
+    if family_effect:
+        top_family = family_effect[0]
+        lines.append(
+            f"- 分档族主效应最强的是 `{top_family['族']}`："
+            f"跨组合平均净收益率 {fmt_pct(top_family['平均净收益率'])}，"
+            f"正收益组合占比 {fmt_pct(top_family['正收益组合占比'], signed=False)}。"
+        )
+    if entry_effect:
+        top_entry = entry_effect[0]
+        lines.append(
+            f"- 低开区间主效应最强的是 `{top_entry['低开区间']}`："
+            f"跨组合平均净收益率 {fmt_pct(top_entry['平均净收益率'])}，"
+            f"正收益组合占比 {fmt_pct(top_entry['正收益组合占比'], signed=False)}。"
+        )
+    if diffs_all:
+        lines.append(
+            f"- 最低价支撑的配对差异：要求 − 不要求的平均差异为 "
+            f"{fmt_pct(_mean(diffs_all))}，要求更优的配对占比 "
+            f"{fmt_pct(float(np.mean([d > 0 for d in diffs_all])), signed=False)}；"
+            "但它会减少样本数，需同时看样本减少和稳定性。"
+        )
+    lines.append("")
+    lines.append("**注意事项：**")
+    lines.append("")
+    lines.append("- 网格组合数很大，单个最优组合可能是样本内噪声；优先看主效应/族效应和年度稳定性。")
+    lines.append("- 低开区间存在嵌套/重叠，配对比较和主效应会被重复样本放大。")
+    lines.append("- 同一交易日可能有多个信号，持仓期重叠；合计净盈亏不是组合净值。")
+    lines.append("- 买入按 T+1 开盘价，未考虑涨停买不进、跌停卖不掉之外的盘中流动性。")
+    lines.append("- 结果对佣金、滑点、停牌/跌停处理敏感；实盘前应做样本外/滚动验证。")
+    lines.append("")
 
-    lines = [
-        "# limit_up_shakeout 现金收益网格搜索（止盈分档 × T+1 买入低开 × 限价深度）",
-        "",
-        f"- 生成时间：{generated_at}",
-        f"- 命中表：`hit_limit_up_shakeout`，区间 `{start}` ~ `{end}`",
-        f"- T 日高开区间：`{fmt_range(DEFAULT_GAP)}`（闭区间）",
-        f"- T 日收盘涨跌幅区间：`{fmt_range(DEFAULT_CLOSE_CHG)}`（闭区间）",
-        f"- 近 {DEFAULT_RISE_DAYS} 日涨幅区间：`{fmt_range(DEFAULT_RISE)}`（闭区间，等于不限）",
-        f"- 信号日最低价条件：{'要求' if DEFAULT_REQUIRE_LOW_SUPPORT else '不要求'}"
-        "（后复权 `low(T) >= close(T-1)`）",
-        f"- 每笔预算：`{args.position:,.0f}` 元；手数模式：`{args.lot_mode}`（100 股/手）",
-        f"- 佣金 `{args.commission:.5%}`（最低 {args.min_commission:.0f} 元）、"
-        f"印花税 `{args.stamp:.3%}`（卖出）、过户费 `{args.transfer:.4%}`（双边）、"
-        f"滑点 `{args.slippage:.2%}`（单边）",
-        f"- 尾盘跌停顺延：最多 {args.max_delay_days} 个交易日，超期按最后收盘估值",
-        "",
-        "## 网格定义",
-        "",
-        md_table(tier_grid_legend, ["名称", "族", "分段函数"]),
-        "",
-        md_table(entry_grid_legend, ["低开", "区间"]),
-        "",
-        md_table(delta_grid_legend, ["delta", "含义"]),
-        "",
-        f"> 共 {len(EXIT_TIERS_GRID)} 个分档 × {len(ENTRY_GAP_GRID)} 个低开区间 × "
-        f"{len(DELTA_GRID)} 个 delta = {len(results)} 个组合。同一 (低开 × delta) 下"
-        f"所有分档共用 `{REFERENCE_SCHEME}` 筛出的同一样本集合（按构造一致），对比只"
-        "反映离场规则差异；冻结样本校验（极端阈值轮廓独立重筛的差异）："
-        f"{verify_text}。各分档 JSON 定义见 `run_meta.json`。",
-        "",
-        "## 冻结样本与限价成交率",
-        "",
-        md_table(
-            freeze_rows,
-            ["低开", "delta", "冻结样本数", "限价未成交跳过", "留存率(对delta=0)"],
-        ),
-        "",
-        "> delta 越深，T+1 最低价触及买入价的样本越少（留存率下降）；被跳过的样本"
-        "不参与该 delta 下的任何组合。各组合指标中的「买入失败」列为一致性校验，"
-        "正常应为 0（未成交样本在冻结阶段已剔除）。",
-        "",
-        f"## 组合总览 Top {TOP_SHOWN}"
-        f"（按平均净收益率降序；全部 {len(results)} 个组合见 grid_results.csv）",
-        "",
-        md_table(
-            overview_rows,
-            ["组合", "族", "止盈分档", "T+1低开", "delta", "样本数", "净盈亏合计",
-             "平均净收益率", "中位数", "胜率", "盈亏比", "收益/预算", "延期", "超期估值"],
-        ),
-        "",
-        f"## 分年表现（Top {TOP_SHOWN}，平均净收益率，括号内为已卖出样本数）",
-        "",
-        md_table(matrix_rows, ["组合", *years, "正收益年数"]),
-        "",
-        "## 分档 × delta 矩阵（低开1，平均净收益率）",
-        "",
-        md_table(
-            scheme_matrix_rows,
-            ["分档", "族", *[dn for dn, _d in DELTA_GRID], "最优delta",
-             f"{delta_last}-{delta_first}"],
-        ),
-        "",
-        f"> 「最优delta」为该分档在低开1 下平均净收益率最高的 delta；"
-        f"「{delta_last}-{delta_first}」为最深折价相对开盘买入的变化（敏感度）。"
-        "低开2 的对应矩阵见 grid_results.csv；对角线（r=delta，卖出目标相对开盘价"
-        "≈不变）见「关键单变量对比」。",
-        "",
-        "## delta 汇总（按 低开 × delta）",
-        "",
-        md_table(
-            delta_rows,
-            ["低开", "delta", "组合数", "全档平均", "固定阈值族平均", "全正阈值族平均",
-             "含负阈值族平均", "主效应(对delta=0)", "最优组合"],
-        ),
-        "",
-        "> 「主效应」= 该 delta 下全部分档相对 delta=0 的平均净收益率变化均值"
-        "（同低开区间内逐分档配对），衡量折价本身的平均影响；「最优组合」跨两个低开区间。",
-        "",
-        "## 止盈档位分布（净收益率前 10 的组合，全部组合见 CSV）",
-        "",
-        md_table(
-            tier_long_rows,
-            ["组合", "止盈档位", "止盈阈值", "样本数", "已卖出",
-             "平均净收益率", "胜率", "净盈亏合计"],
-        ),
-        "",
-        "## 卖出方式分布（净收益率前 5 的组合，全部组合见 CSV）",
-        "",
-    ]
-    for section in mode_sections:
-        lines.extend(section)
-
-    lines.extend(
-        [
-            "## 关键单变量对比",
-            "",
-            *comparison_lines,
-            "",
-            "> 第一组（分档/低开对比）固定在 delta=0，与历史轮次同口径，差异纯由离场"
-            "规则或低开区间引起；对角线组保持卖出目标相对开盘价 ≈ 不变（r=delta），"
-            "只加深买入折价，用于隔离「限价折价本身是否划算」；同分档加深组保持阈值"
-            "相对买入成本不变。低开2 方向一致，明细见 CSV。",
-            "",
-            "## 结论",
-            "",
-            f"- 平均净收益率最高：**{best_avg['组合']}**"
-            f"（{fmt_pct(best_avg['平均净收益率'])}，{best_avg['已卖出']} 笔已卖出，"
-            f"胜率 {fmt_pct(best_avg['胜率'], signed=False)}）",
-            f"- 净盈亏合计最高：**{best_total['组合']}**（{fmt_money(best_total['净盈亏合计'])} 元）",
-            "- 各 delta 下最优：" + "；".join(best_per_delta),
-            "- delta 主效应（低开1，跨全部分档平均）："
-            + "；".join(
-                f"{delta:g}% {fmt_pct(delta_effect.get((entry_first, delta_name)))}"
-                for delta_name, delta in DELTA_GRID[1:]
-                if delta_effect.get((entry_first, delta_name)) is not None
-            )
-            + "（正值代表折价平均改善收益）",
-            f"- 对角线（卖出目标 ≈ 开盘价不变，只加深折价，固定 r=delta）：{diagonal_fixed}；"
-            "若沿折价加深单调改善，说明折价收益超过成交率损失。",
-            f"- 对角线（3 档阶梯，+0.5pp/+1pp 阈值配 0.5%/1% 折价）：{diagonal_ladder}"
-            "（分档边界不随 delta 平移，样本归档有轻微漂移，参考意义弱于固定族对角线）。",
-            f"- 分年最稳（{max_positive}/{len(years)} 年为正，并列 {len(most_stable)} 个）："
-            + "、".join(
-                f"{r['组合']}（{fmt_pct(r['平均净收益率'])}）" for r in most_stable[:5]
-            )
-            + ("……" if len(most_stable) > 5 else ""),
-            f"- 动态分档最好 {best_dyn['组合']}（{fmt_pct(best_dyn['平均净收益率'])}）"
-            f" vs 固定阈值最好 {best_fix['组合']}（{fmt_pct(best_fix['平均净收益率'])}）："
-            f"动态{'高' if dyn_minus_fix >= 0 else '低'} {abs(dyn_minus_fix) * 100:.2f} 个百分点",
-            f"- 低开1 × delta=0 下，含负阈值族平均 {fmt_pct(float(np.mean([r['平均净收益率'] or 0.0 for r in neg_on_e1])))}"
-            f" vs 全正阈值族平均 {fmt_pct(float(np.mean([r['平均净收益率'] or 0.0 for r in pos_on_e1])))}"
-            f"（差 {family_delta * 100:+.2f} 个百分点）",
-            f"- 低开放宽到 [-11%, 0%] 平均为全部 {len(entry_deltas)} 个 (分档×delta) 拉低 "
-            f"{fmt_pct(float(np.mean(entry_deltas)))} 的平均净收益率",
-            "",
-            "## 口径说明",
-            "",
-            "- 买入：delta=0 为 T+1 不复权开盘价；delta>0 为限价 "
-            "(1+a-delta%)×close(T)（a=open(T+1)/close(T)-1，不复权），T+1 最低价触及"
-            "基准价才成交（按基准价，未考虑排队与部分成交）。实际买入价 = 基准价×(1+滑点)。",
-            "- 止盈分档涨幅 = close(T+1)/买入基准价 - 1（delta=0 时即原日内涨幅 "
-            "close/open-1）；止盈目标价 = 买入基准价 × (1 + 该档止盈阈值)。目标价换回"
-            "开盘价口径 ≈ 阈值 - delta，这是对角线对比（r=delta）的理论依据；a≠0 时存在二阶小偏差。",
-            "- 卖出分支按不复权价格与分档参数逐样本重新判定：T+2 开盘高于目标价按开盘卖、"
-            "盘中最高价触及目标价按目标价卖、否则收盘卖；收盘跌停顺延，超期按最后收盘估值"
-            "（估值样本在总览中单列，不算已实现）。",
-            "- 手数按预算 floor 取整；资金不足 1 手的样本买入数为 0 但仍计入样本数。",
-            "- 同一交易日多个样本可能重叠，净盈亏合计不是组合净值，也不代表可同时投入的资金。",
-            "- 手续费按成交金额计算，佣金有最低 5 元限制。",
-            "- 样本冻结按 (低开 × delta) 进行：同组全部组合共用基准分档筛出的样本；"
-            "若某分档的独立筛选会排除个别缺 T+2 最高价的样本，冻结口径下它们会以"
-            "“未卖出”错误行出现并在总览可见。delta>0 的未成交样本在冻结阶段即被剔除，"
-            "不进入该 delta 的任何组合。",
-            "- all_trades.csv 默认只写 Top50 组合 ∪ 基准扫描组合"
-            f"（{len(DELTA_ANCHOR_SCHEMES)} 个基准档 × 低开1 × 全部 delta），"
-            "其余组合可用 limitup_shakeout_cash_returns.py 传对应参数复现（见下节）。",
-            "- 逐笔分析列口径：买入日低开 = `open(T+1)/除权后昨收 - 1`（百分数，"
-            "低开 3.3 个点记 -3.3，与低开筛选条件同口径）；行业取命中表快照；"
-            "流通市值为 T+1 日 `daily_basic.circ_mv`（万元）；量能比 = T 日成交量 / "
-            "T-1 日成交量（与策略“放量”条件同口径，成交量单位手）；涨停日 K 线实体 = "
-            "`(T-1 收盘 - T-1 开盘) / T-1 开盘 × 100`（T-1 即涨停日，不复权价）。",
-            "",
-            "## 复现",
-            "",
-            "```powershell",
-            "uv run python tmp_scripts/limitup_shakeout_cash_grid_search.py",
-            "",
-            "# 单独复现某个组合（例：分档22 × 低开1 × delta 1.0）；各分档 JSON 见 run_meta.json",
-            "uv run python tmp_scripts/limitup_shakeout_cash_returns.py "
-            "--start 2018-11-01 --end latest \\",
-            f"  --gap {DEFAULT_GAP[0]} {DEFAULT_GAP[1]} "
-            f"--close-chg {DEFAULT_CLOSE_CHG[0]} {DEFAULT_CLOSE_CHG[1]} \\",
-            f"  --rise {DEFAULT_RISE[0]} {DEFAULT_RISE[1]} "
-            f"--rise-days {DEFAULT_RISE_DAYS} \\",
-            f"  --entry-gap {ENTRY_GAP_GRID[0][1][0]} {ENTRY_GAP_GRID[0][1][1]} "
-            "--require-low-support \\",
-            f"  --exit-tiers \"{json.dumps(tiers_to_jsonable(next(t for n, t, f in EXIT_TIERS_GRID if n == '分档22')), ensure_ascii=False)}\" \\",
-            "  --delta 1.0",
-            "```",
-            "",
-            "## 输出文件",
-            "",
-            "- `report.md`：本报告",
-            "- `grid_results.csv`：全部组合总览指标（含 delta 列与各分档 JSON）",
-            "- `yearly_stats.csv`：各组合分年统计（长表，含 delta）",
-            "- `tier_breakdown.csv`：各组合止盈档位分布（含 delta）",
-            "- `sell_mode_breakdown.csv`：各组合卖出方式分布（含 delta）",
-            "- `all_trades.csv`：Top50 ∪ 基准扫描组合的逐笔现金明细（含组合标签、delta，"
-            "以及行业、买入日低开、买入日流通市值、量能比、涨停日 K 线实体等分析列）",
-            "- `run_meta.json`：网格定义（含各分档 JSON、DELTA_GRID 与逐 (低开×delta) "
-            "冻结统计）与运行参数",
-            "",
-        ]
-    )
+    lines.append("## 13. 输出文件")
+    lines.append("")
+    lines.append("- `grid_results.csv`：全部组合汇总指标")
+    lines.append("- `tier_main_effects.csv`：分档主效应")
+    lines.append("- `entry_gap_main_effects.csv`：低开区间主效应")
+    lines.append("- `family_main_effects.csv`：分档族主效应")
+    lines.append("- `low_support_effects.csv`：要求/不要求支撑的逐对差异")
+    lines.append("- `low_support_summary.csv`：按低开区间汇总的支撑效应")
+    lines.append("- `best_by_entry_support.csv`：每个低开区间×支撑下的最佳分档")
+    lines.append("- `yearly_stats.csv` / `tier_breakdown.csv` / `sell_mode_breakdown.csv`")
+    lines.append("- `all_trades.csv`：Top-N 组合 + 基准组合逐笔明细")
+    lines.append("- `run_meta.json`：网格定义、样本量与参数")
+    lines.append("")
     return "\n".join(lines)
 
 
+# ==============================================================================
+# 主流程
+# ==============================================================================
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = parse_args()
+    args = parse_args(argv)
     if args.position <= 0:
         raise SystemExit("--position 必须 > 0")
     if args.max_delay_days < 0:
         raise SystemExit("--max-delay-days 必须 >= 0")
-    if DEFAULT_TRADES_TOP_N < 0:
-        raise SystemExit("DEFAULT_TRADES_TOP_N 必须 >= 0（0 = 全部组合写入明细）")
+    if args.min_samples < 0:
+        raise SystemExit("--min-samples 必须 >= 0")
+    if args.top_trades < 0:
+        raise SystemExit("--top-trades 必须 >= 0（0 = 不写逐笔明细）")
+
     scheme_tiers = {name: tiers for name, tiers, _family in EXIT_TIERS_GRID}
-    scheme_family = {name: family for name, _tiers, family in EXIT_TIERS_GRID}
-    for name, tiers in scheme_tiers.items():
+    if len(scheme_tiers) != len(EXIT_TIERS_GRID):
+        raise SystemExit("止盈分档名称存在重复")
+    for name, tiers, _family in EXIT_TIERS_GRID:
         try:
             validate_exit_tiers(tiers)
         except ValueError as exc:
             raise SystemExit(f"网格中的止盈分档 {name} 无效：{exc}") from exc
-    for name, rng in ENTRY_GAP_GRID:
-        if len(rng) != 2 or rng[0] > rng[1]:
-            raise SystemExit(f"网格中的低开区间 {name} 无效：{rng}")
-    for delta_name, delta in DELTA_GRID:
-        if delta < 0:
-            raise SystemExit(f"网格中的限价深度 {delta_name} 无效：{delta}（必须 >= 0）")
-    missing_anchors = [s for s in DELTA_ANCHOR_SCHEMES if s not in scheme_tiers]
-    if missing_anchors:
-        raise SystemExit(f"DELTA_ANCHOR_SCHEMES 引用了不存在的分档：{missing_anchors}")
-    missing_verify = [s for s in VERIFY_SCHEMES if s not in scheme_tiers]
+    if REFERENCE_SCHEME not in scheme_tiers:
+        raise SystemExit(f"参考分档 {REFERENCE_SCHEME} 不存在")
+    missing_verify = [name for name in VERIFY_SCHEMES if name not in scheme_tiers]
     if missing_verify:
         raise SystemExit(f"VERIFY_SCHEMES 引用了不存在的分档：{missing_verify}")
+    for name, rng, _note in ENTRY_GAP_GRID:
+        if len(rng) != 2 or rng[0] > rng[1]:
+            raise SystemExit(f"网格中的低开区间 {name} 无效：{rng}")
 
-    start = filtered.compact_date(args.start)
+    start = cash.compact_date(args.start)
     end = with_retry(lambda: cash.resolve_end_date(args.end), "解析结束日期")
     if start > end:
         raise SystemExit(f"起始日期 {start} 晚于结束日期 {end}")
 
-    n_schemes = len(EXIT_TIERS_GRID)
-    total_combos = n_schemes * len(ENTRY_GAP_GRID) * len(DELTA_GRID)
-    print("=" * 90)
-    print("limit_up_shakeout 现金收益网格搜索（止盈分档 × T+1 买入低开 × 限价深度）")
+    total_combos = len(EXIT_TIERS_GRID) * len(ENTRY_GAP_GRID) * len(LOW_SUPPORT_OPTIONS)
+    print("=" * 96)
+    print("limit_up_shakeout 现金收益网格搜索")
+    print("  维度：止盈分档 × T+1 买入低开区间 × 是否要求最低价支撑")
     print(f"  统计区间：{start} ~ {end}")
-    print(f"  固定筛选：T日高开 {fmt_range(DEFAULT_GAP)}；T日收盘涨跌幅 {fmt_range(DEFAULT_CLOSE_CHG)}")
-    print(f"  近{DEFAULT_RISE_DAYS}日涨幅 {fmt_range(DEFAULT_RISE)}；"
-          f"信号日最低价>=前一日收盘：{'要求' if DEFAULT_REQUIRE_LOW_SUPPORT else '不要求'}")
-    print(f"  网格：{n_schemes} 个止盈分档 × {len(ENTRY_GAP_GRID)} 个低开区间 × "
-          f"{len(DELTA_GRID)} 个 delta = {total_combos} 个组合")
-    for name, tiers, family in EXIT_TIERS_GRID:
-        print(f"    {name}（{family}）：{format_tiers_summary(tiers)}")
-    for name, rng in ENTRY_GAP_GRID:
-        print(f"    {name}：{fmt_range(rng)}")
-    for delta_name, delta in DELTA_GRID:
-        meaning = "开盘价买入（原口径）" if delta == 0 else f"开盘下方 {delta:g}% 限价"
-        print(f"    {delta_name}：{meaning}")
-    print(f"  每笔预算：{args.position:,.0f} 元；手数模式：{args.lot_mode}；滑点：{args.slippage:.2%}")
-    print(f"  样本冻结基准：{REFERENCE_SCHEME}（按 低开 × delta 分别冻结）；"
-          f"校验轮廓：{'、'.join(VERIFY_SCHEMES)}")
-    print("-" * 90)
+    print(
+        f"  固定筛选：T日高开 {fmt_range(DEFAULT_GAP)}；"
+        f"T日收盘涨跌幅 {fmt_range(DEFAULT_CLOSE_CHG)}；"
+        f"近N日涨幅 {cash.fmt_n_days_rise(DEFAULT_N_DAYS_RISE)}"
+    )
+    print(
+        f"  网格：{len(EXIT_TIERS_GRID)} 个止盈分档 × "
+        f"{len(ENTRY_GAP_GRID)} 个低开区间 × "
+        f"{len(LOW_SUPPORT_OPTIONS)} 个支撑条件 = {total_combos:,} 个组合"
+    )
+    print(
+        f"  每笔预算：{args.position:,.0f} 元；手数模式：{args.lot_mode}；"
+        f"佣金：{args.commission:.5%}（最低 {args.min_commission:,.0f} 元）；"
+        f"滑点：{args.slippage:.2%}"
+    )
+    print(f"  参考分档：{REFERENCE_SCHEME}；校验轮廓：{'、'.join(VERIFY_SCHEMES)}")
+    print("-" * 96)
 
     t0 = time.time()
     print(f"读取命中样本 {start} ~ {end} ...")
-    hits = with_retry(lambda: filtered.load_hits(start, end), "读取命中样本")
+    hits = with_retry(lambda: cash.load_hits(start, end), "读取命中样本")
     if hits.empty:
         raise SystemExit("指定区间没有 limit_up_shakeout 命中样本")
     print(f"命中样本：{len(hits):,} 条")
 
-    calendar = with_retry(filtered.load_calendar, "读取交易日历")
-    hits = filtered.attach_dates(hits, calendar, DEFAULT_RISE_DAYS)
-    needed_dates = pd.concat(
-        [
-            hits["hit_date"],
-            hits["prev_date"],
-            hits["rise_ref_date"],
-            hits["t1_date"],
-            hits["t2_date"],
-        ],
-        ignore_index=True,
-    ).dropna()
-    if needed_dates.empty:
-        raise SystemExit("无法定位任何交易日")
-    min_date, max_date = str(needed_dates.min()), str(needed_dates.max())
-
-    print(f"读取行情 {min_date} ~ {max_date} ...")
+    calendar = with_retry(cash.load_calendar, "读取交易日历")
+    hits = cash.attach_dates(hits, calendar, DEFAULT_N_DAYS_RISE)
+    print("读取行情（按样本角色日期精确取数）...")
     prices = with_retry(
-        lambda: filtered.load_prices(sorted(hits["ts_code"].unique()), min_date, max_date),
+        lambda: cash.load_prices_by_keys(cash.price_keys_for_hits(hits)),
         "读取行情",
     )
     if prices.empty:
         raise SystemExit("没有读取到行情数据")
     print(f"行情行数：{len(prices):,}（耗时 {time.time() - t0:.1f}s）")
-    print("-" * 90)
+    print("-" * 96)
 
-    def run_scheme_samples(
-        entry_gap: tuple[float, float], delta: float, tiers: tuple
+    def run_samples(
+        entry_gap: tuple[float, float],
+        require_low_support: bool,
+        tiers: tuple,
     ) -> pd.DataFrame:
-        """跑一次完整筛选，返回全部命中样本框架（含 included 标记）。"""
-        return filtered.build_samples(
+        return cash.build_samples(
             hits,
             prices,
             DEFAULT_GAP,
             DEFAULT_CLOSE_CHG,
-            DEFAULT_RISE,
-            DEFAULT_RISE_DAYS,
+            DEFAULT_N_DAYS_RISE,
             tiers,
             entry_gap,
-            delta_pct=delta,
-            require_low_support=DEFAULT_REQUIRE_LOW_SUPPORT,
+            delta_pct=0.0,
+            require_low_support=require_low_support,
+            compute_reasons=False,
         )
 
-    # 样本冻结：每个 (低开 × delta) 只筛一次，全部 33 个分档共用（保证纯离场规则
-    # 对比）。delta>0 时样本集合依赖限价成交判定，必须逐 delta 冻结。
-    frozen_input: dict[tuple[str, str], pd.DataFrame] = {}
-    frozen_keys: dict[tuple[str, str], set] = {}
-    frozen_stats: dict[tuple[str, str], dict] = {}
+    # 每个（低开区间 × 支撑条件）冻结一次样本；分档只改变卖出规则。
+    frozen_input: dict[tuple[str, bool], pd.DataFrame] = {}
+    frozen_keys: dict[tuple[str, bool], set] = {}
+    sample_stats: dict[tuple[str, bool], dict] = {}
     base_samples: pd.DataFrame | None = None
-    for entry_name, entry_gap in ENTRY_GAP_GRID:
-        for delta_name, delta in DELTA_GRID:
-            samples = run_scheme_samples(
-                entry_gap, delta, scheme_tiers[REFERENCE_SCHEME]
-            )
+    reference_tiers = scheme_tiers[REFERENCE_SCHEME]
+    for entry_name, entry_gap, _note in ENTRY_GAP_GRID:
+        for support, support_label in LOW_SUPPORT_OPTIONS:
+            samples = run_samples(entry_gap, support, reference_tiers)
             included = samples[samples["included"]].copy()
-            if included.empty:
-                raise SystemExit(
-                    f"低开区间 {entry_name} × delta {delta_name} "
-                    "筛选后没有可计算收益的样本"
-                )
+            hit_samples = len(samples)
             if base_samples is None:
-                # 全量样本框架（含未纳入样本），供分析列构建使用；分析列只用
-                # 与 delta 无关的列（entry_gap/prev_date/t1_date 等），取
-                # (低开1, d0) 一次即可
                 base_samples = samples
-            cash_input = cash.build_cash_input(included).drop(
-                columns=["收益率(后复权)"]
-            )
-            frozen_input[(entry_name, delta_name)] = cash_input
-            frozen_keys[(entry_name, delta_name)] = set(
+            if included.empty:
+                print(
+                    f"  低开 {entry_name} × 支撑{support_label}："
+                    "筛选后没有可计算收益的样本，跳过"
+                )
+                sample_stats[(entry_name, support)] = {
+                    "samples": 0,
+                    "hit_samples": hit_samples,
+                    "excluded": hit_samples,
+                }
+                continue
+            cash_input = cash.build_cash_input(included)
+            frozen_input[(entry_name, support)] = cash_input
+            frozen_keys[(entry_name, support)] = set(
                 zip(
                     cash_input["命中日期"].astype(str),
                     cash_input["股票代码"].astype(str),
                 )
             )
-            # 其余筛选全部满足、但限价未成交而被跳过的样本数（delta=0 时恒为 0）
-            filters_mask = (
-                samples["passed_gap"]
-                & samples["passed_close"]
-                & samples["passed_rise"]
-                & samples["passed_entry_gap"]
-            )
-            if DEFAULT_REQUIRE_LOW_SUPPORT:
-                filters_mask &= samples["passed_low_support"]
-            unfilled_n = int((filters_mask & ~samples["buy_filled"]).sum())
-            frozen_stats[(entry_name, delta_name)] = {
+            sample_stats[(entry_name, support)] = {
                 "samples": len(cash_input),
-                "unfilled": unfilled_n,
+                "hit_samples": hit_samples,
+                "excluded": hit_samples - len(cash_input),
             }
             print(
-                f"低开 {entry_name} × delta {delta_name}（{delta:g}%）："
-                f"冻结样本 {len(cash_input):,} 条"
-                f"（其余筛选满足但限价未成交 {unfilled_n:,} 条；基准 {REFERENCE_SCHEME}）"
+                f"  低开 {entry_name} × 支撑{support_label}："
+                f"冻结样本 {len(cash_input):,} / {hit_samples:,} 条"
             )
+    if base_samples is None or not frozen_input:
+        raise SystemExit("没有可用于网格搜索的样本")
 
-    # 校验：极端阈值轮廓独立重筛，对比各冻结样本集合差异（应为 0）
+    # 校验：极端阈值轮廓独立重筛，对比冻结样本集合差异（应为 0）
     verify_diffs: dict[str, int] = {}
-    for entry_name, entry_gap in ENTRY_GAP_GRID:
-        for delta_name, delta in DELTA_GRID:
-            for vname in VERIFY_SCHEMES:
-                vsamples = run_scheme_samples(
-                    entry_gap, delta, scheme_tiers[vname]
-                )
+    for entry_name, entry_gap, _note in ENTRY_GAP_GRID:
+        for support, support_label in LOW_SUPPORT_OPTIONS:
+            key = (entry_name, support)
+            if key not in frozen_keys:
+                continue
+            for verify_name in VERIFY_SCHEMES:
+                vsamples = run_samples(entry_gap, support, scheme_tiers[verify_name])
                 vincluded = vsamples[vsamples["included"]].copy()
                 vkeys = set(
                     zip(
@@ -1429,26 +1677,23 @@ def main(argv: list[str] | None = None) -> int:
                         vincluded["ts_code"].astype(str),
                     )
                 )
-                diff = len(vkeys ^ frozen_keys[(entry_name, delta_name)])
-                verify_diffs[f"{vname}×{entry_name}×{delta_name}"] = diff
+                diff = len(vkeys ^ frozen_keys[key])
+                verify_diffs[f"{verify_name}×{entry_name}×支撑{support_label}"] = diff
                 if diff:
                     print(
-                        f"  注意：{vname}×{entry_name}×{delta_name} "
+                        f"  注意：{verify_name}×{entry_name}×支撑{support_label} "
                         f"独立重筛与冻结集合差异 {diff} 条"
                     )
     if all(v == 0 for v in verify_diffs.values()):
         print(f"冻结样本校验通过：{len(verify_diffs)} 个极端轮廓重筛差异均为 0 条")
 
-    # 逐笔分析列：行业 / 买入日低开 / 流通市值 / 量能比 / 涨停日 K 线实体
+    # 逐笔分析列（行业/低开/流通市值/量能/涨停日实体）
     enrich = build_enrichment(base_samples, prices, start, end)
-    print(
-        f"分析列构建完成：{len(enrich):,} 行"
-        f"（低开/行业/流通市值/量能比/涨停日实体）"
-    )
+    print(f"分析列构建完成：{len(enrich):,} 行")
 
-    # 预取顺延行情并注入：组合循环阶段零数据库访问，不受网络抖动影响
+    # 预取顺延行情：组合循环阶段零数据库访问
     delay_cache = preload_delay_cache(frozen_input, calendar, args.max_delay_days)
-    print("-" * 90)
+    print("-" * 96)
 
     cash_args_base = dict(
         position=args.position,
@@ -1459,92 +1704,95 @@ def main(argv: list[str] | None = None) -> int:
         stamp=args.stamp,
         transfer=args.transfer,
         slippage=args.slippage,
+        delta=0.0,
     )
-    entry_gap_map = {name: rng for name, rng in ENTRY_GAP_GRID}
+    cash_args = argparse.Namespace(**cash_args_base)
 
     results: list[dict] = []
     yearly: dict[str, list[dict]] = {}
     tier_breakdown: dict[str, list[dict]] = {}
     sell_mode: dict[str, list[dict]] = {}
-
-    # 第一遍：只算各组合指标，不驻留逐笔明细（330 个组合全量驻留会占用过多内存；
-    # all_trades.csv 的入选组合等指标齐全后第二遍补算并增量写盘）
-    t_combo = time.time()
+    effective_total = len(frozen_input) * len(EXIT_TIERS_GRID)
     done = 0
+    t_combo = time.time()
+
     for tier_name, tiers, family in EXIT_TIERS_GRID:
-        for entry_name in entry_gap_map:
-            for delta_name, delta in DELTA_GRID:
-                combo_id = f"{tier_name}×{entry_name}×{delta_name}"
-                cash_args = argparse.Namespace(**cash_args_base, delta=delta)
+        for entry_name, entry_gap, _note in ENTRY_GAP_GRID:
+            for support, support_label in LOW_SUPPORT_OPTIONS:
+                key = (entry_name, support)
+                if key not in frozen_input:
+                    continue
+                combo_id = f"{tier_name}×{entry_name}×支撑{support_label}"
                 trades = cash.calc_trades(
-                    frozen_input[(entry_name, delta_name)], cash_args, tiers,
-                    calendar=calendar, price_cache=delay_cache,
+                    frozen_input[key],
+                    cash_args,
+                    tiers,
+                    calendar=calendar,
+                    price_cache=delay_cache,
                 )
                 metrics = combo_metrics(
-                    combo_id, tier_name, family, tiers, entry_name,
-                    entry_gap_map[entry_name], delta, delta_name, trades, args,
+                    combo_id,
+                    tier_name,
+                    family,
+                    tiers,
+                    entry_name,
+                    entry_gap,
+                    support,
+                    trades,
+                    args,
                 )
                 results.append(metrics)
                 yearly[combo_id] = yearly_rows(trades)
                 tier_breakdown[combo_id] = tier_breakdown_rows(trades, tiers)
                 sell_mode[combo_id] = sell_mode_rows(trades)
                 done += 1
-                print(
-                    f"{combo_id}：样本 {metrics['样本数']:,}，"
-                    f"净盈亏合计 {fmt_money(metrics['净盈亏合计'])} 元，"
-                    f"平均净收益率 {fmt_pct(metrics['平均净收益率'])}，"
-                    f"胜率 {fmt_pct(metrics['胜率'], signed=False)}"
-                    f"（{done}/{total_combos}，{time.time() - t_combo:.0f}s）"
-                )
+                if done % 25 == 0 or done == effective_total:
+                    print(
+                        f"  已完成 {done}/{effective_total} 个组合"
+                        f"（{time.time() - t_combo:.0f}s）"
+                    )
+    print("-" * 96)
 
-    print("-" * 90)
-    ranked = sorted(
+    ranked_all = sorted(
         results,
-        key=lambda r: (r["平均净收益率"] is None, r["平均净收益率"] or 0.0),
-        reverse=True,
+        key=lambda row: (
+            row["平均净收益率"] is None,
+            -(row["平均净收益率"] or 0.0),
+        ),
     )
-    metrics_index = {r["组合"]: r for r in results}
-    print(f"按平均净收益率排名（前 10 / 共 {len(ranked)}）：")
-    for i, r in enumerate(ranked[:10], start=1):
+    ranked = [
+        row
+        for row in ranked_all
+        if row["平均净收益率"] is not None and row["样本数"] >= args.min_samples
+    ]
+    if not ranked:
+        print(f"没有组合达到最小样本数 {args.min_samples}，排名改用全部组合")
+        ranked = [row for row in ranked_all if row["平均净收益率"] is not None]
+    metrics_index = {row["组合"]: row for row in results}
+
+    print(f"按平均净收益率排名（前 10 / 共 {len(ranked)} 个达标组合）：")
+    for i, row in enumerate(ranked[:10], start=1):
         print(
-            f"  {i}. {r['组合']}：{fmt_pct(r['平均净收益率'])}，"
-            f"净盈亏合计 {fmt_money(r['净盈亏合计'])} 元，胜率 {fmt_pct(r['胜率'], signed=False)}"
+            f"  {i}. {row['组合']}：{fmt_pct(row['平均净收益率'])}，"
+            f"样本 {row['样本数']:,}，净盈亏 {fmt_money(row['净盈亏合计'])} 元，"
+            f"胜率 {fmt_pct(row['胜率'], signed=False)}"
         )
 
-    # delta 主效应与成交留存（低开1，跨全部分档平均）
-    entry_first_name = ENTRY_GAP_GRID[0][0]
-    delta_first_name = DELTA_GRID[0][0]
-    base_avg = {
-        r["分档"]: r["平均净收益率"]
-        for r in results
-        if r["低开"] == entry_first_name and r["delta名"] == delta_first_name
-    }
-    base_st = frozen_stats.get((entry_first_name, delta_first_name)) or {}
-    effect_parts = []
-    for delta_name, delta in DELTA_GRID[1:]:
-        subs = [
-            r for r in results
-            if r["低开"] == entry_first_name and r["delta名"] == delta_name
-        ]
-        diffs = [
-            r["平均净收益率"] - base_avg[r["分档"]]
-            for r in subs
-            if r["分档"] in base_avg
-            and r["平均净收益率"] is not None
-            and base_avg[r["分档"]] is not None
-        ]
-        st = frozen_stats.get((entry_first_name, delta_name)) or {}
-        retention = (
-            f"，留存率 {st['samples'] / base_st['samples']:.1%}"
-            if st.get("samples") and base_st.get("samples")
-            else ""
-        )
-        if diffs:
-            effect_parts.append(
-                f"{delta:g}%：{float(np.mean(diffs)) * 100:+.2f} pp{retention}"
+    tier_effect = main_effect_rows(results, "分档", args.min_samples)
+    entry_effect = main_effect_rows(results, "低开区间", args.min_samples)
+    family_effect = family_rows(results, args.min_samples)
+    support_detail, support_summary = low_support_effect_rows(
+        results, args.min_samples
+    )
+    best_entry_support = best_by_entry_support(results, args.min_samples)
+
+    if tier_effect:
+        print("分档族主效应（按平均净收益率）：")
+        for row in family_effect:
+            print(
+                f"  {row['族']}：{fmt_pct(row['平均净收益率'])}，"
+                f"正收益组合占比 {fmt_pct(row['正收益组合占比'], signed=False)}"
             )
-    if effect_parts:
-        print("delta 主效应（低开1，跨全部分档相对开盘买入的平均变化）：" + "；".join(effect_parts))
 
     generated_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     run_dir: Path | None = None
@@ -1554,108 +1802,174 @@ def main(argv: list[str] | None = None) -> int:
         )
         run_dir.mkdir(parents=True, exist_ok=True)
 
-        grid_csv_rows = []
-        for r in ranked:
-            grid_csv_rows.append(
+        # 1) 全部组合
+        grid_rows = []
+        for row in ranked_all:
+            grid_rows.append(
                 {
-                    "组合": r["组合"],
-                    "delta": r["delta"],
-                    "族": r["族"],
-                    "止盈分档": format_tiers_summary(r["tiers"]),
+                    "组合": row["组合"],
+                    "分档": row["分档"],
+                    "族": row["族"],
+                    "止盈分档": format_tiers_summary(row["tiers"]),
                     "止盈分档JSON": json.dumps(
-                        tiers_to_jsonable(r["tiers"]), ensure_ascii=False
+                        tiers_to_jsonable(row["tiers"]), ensure_ascii=False
                     ),
-                    "T+1低开区间": fmt_range(r["entry_gap"]),
-                    "样本数": r["样本数"],
-                    "实际买入": r["实际买入"],
-                    "买入失败": r["买入失败"],
-                    "已卖出": r["已卖出"],
-                    "延期卖出": r["延期卖出"],
-                    "超期估值": r["超期估值"],
-                    "未卖出": r["未卖出"],
-                    "净盈亏合计": r["净盈亏合计"],
-                    "平均净盈亏": r["平均净盈亏"],
-                    "平均净收益率": r["平均净收益率"],
-                    "中位数": r["中位数"],
-                    "胜率": r["胜率"],
-                    "盈亏比": r["盈亏比"],
-                    "收益/预算": r["收益/预算"],
+                    "低开区间": row["低开区间"],
+                    "区间下界": row["entry_gap"][0],
+                    "区间上界": row["entry_gap"][1],
+                    "要求最低价支撑": row["要求最低价支撑"],
+                    "样本数": row["样本数"],
+                    "实际买入": row["实际买入"],
+                    "买入失败": row["买入失败"],
+                    "已卖出": row["已卖出"],
+                    "延期卖出": row["延期卖出"],
+                    "超期估值": row["超期估值"],
+                    "未卖出": row["未卖出"],
+                    "净盈亏合计": row["净盈亏合计"],
+                    "平均净盈亏": row["平均净盈亏"],
+                    "平均净收益率": row["平均净收益率"],
+                    "中位数": row["中位数"],
+                    "标准差": row.get("标准差"),
+                    "标准误": row.get("标准误"),
+                    "t值": row.get("t值"),
+                    "胜率": row["胜率"],
+                    "盈亏比": row["盈亏比"],
+                    "最小收益率": row["最小收益率"],
+                    "最大收益率": row["最大收益率"],
+                    "收益/预算": row["收益/预算"],
                 }
             )
-        pd.DataFrame(grid_csv_rows).to_csv(
+        pd.DataFrame(grid_rows).to_csv(
             run_dir / "grid_results.csv", index=False, encoding="utf-8-sig"
         )
 
-        yearly_csv_rows = [
-            {"组合": r["组合"], "delta": r["delta"], **row}
-            for r in ranked
-            for row in yearly[r["组合"]]
+        # 2) 主效应
+        def write_effect(rows: list[dict], path: Path, key: str) -> None:
+            out = []
+            for row in rows:
+                item = {
+                    key: row[key],
+                    "组合数": row["组合数"],
+                    "平均净收益率": row["平均净收益率"],
+                    "中位净收益率": row["中位净收益率"],
+                    "正收益组合占比": row["正收益组合占比"],
+                    "平均胜率": row["平均胜率"],
+                    "平均样本数": row["平均样本数"],
+                    "最佳组合均值": row["最佳组合均值"],
+                    "最差组合均值": row["最差组合均值"],
+                }
+                if key == "分档":
+                    item["族"] = row.get("族", "")
+                out.append(item)
+            pd.DataFrame(out).to_csv(path, index=False, encoding="utf-8-sig")
+
+        write_effect(tier_effect, run_dir / "tier_main_effects.csv", "分档")
+        write_effect(entry_effect, run_dir / "entry_gap_main_effects.csv", "低开区间")
+        write_effect(family_effect, run_dir / "family_main_effects.csv", "族")
+
+        pd.DataFrame(support_detail).to_csv(
+            run_dir / "low_support_effects.csv", index=False, encoding="utf-8-sig"
+        )
+        pd.DataFrame(support_summary).to_csv(
+            run_dir / "low_support_summary.csv", index=False, encoding="utf-8-sig"
+        )
+        pd.DataFrame(best_entry_support).to_csv(
+            run_dir / "best_by_entry_support.csv", index=False, encoding="utf-8-sig"
+        )
+
+        # 3) 年度 / 档位 / 卖出方式
+        yearly_rows_out = [
+            {"组合": row["组合"], **item}
+            for row in ranked_all
+            for item in yearly.get(row["组合"], [])
         ]
-        pd.DataFrame(yearly_csv_rows).to_csv(
+        pd.DataFrame(yearly_rows_out).to_csv(
             run_dir / "yearly_stats.csv", index=False, encoding="utf-8-sig"
         )
 
-        tier_csv_rows = [
-            {"组合": r["组合"], "delta": r["delta"], **row}
-            for r in ranked
-            for row in tier_breakdown[r["组合"]]
+        tier_rows_out = [
+            {"组合": row["组合"], **item}
+            for row in ranked_all
+            for item in tier_breakdown.get(row["组合"], [])
         ]
-        pd.DataFrame(tier_csv_rows).to_csv(
+        pd.DataFrame(tier_rows_out).to_csv(
             run_dir / "tier_breakdown.csv", index=False, encoding="utf-8-sig"
         )
 
-        mode_csv_rows = [
-            {"组合": r["组合"], "delta": r["delta"], **row}
-            for r in ranked
-            for row in sell_mode[r["组合"]]
+        mode_rows_out = [
+            {"组合": row["组合"], **item}
+            for row in ranked_all
+            for item in sell_mode.get(row["组合"], [])
         ]
-        pd.DataFrame(mode_csv_rows).to_csv(
+        pd.DataFrame(mode_rows_out).to_csv(
             run_dir / "sell_mode_breakdown.csv", index=False, encoding="utf-8-sig"
         )
 
-        # ---- all_trades.csv：Top-N ∪ 基准扫描组合，第二遍补算并增量写盘 ----
-        top_n = DEFAULT_TRADES_TOP_N if DEFAULT_TRADES_TOP_N > 0 else len(ranked)
-        selected_ids = [r["组合"] for r in ranked[:top_n]]
-        selected_set = set(selected_ids)
-        for anchor in DELTA_ANCHOR_SCHEMES:
-            for delta_name, _delta in DELTA_GRID:
-                cid = f"{anchor}×{ENTRY_GAP_GRID[0][0]}×{delta_name}"
-                if cid in metrics_index and cid not in selected_set:
-                    selected_ids.append(cid)
-                    selected_set.add(cid)
+        # 4) all_trades.csv：Top-N + 基准组合
+        top_n = args.top_trades if args.top_trades > 0 else len(ranked)
+        selected_ids = [row["组合"] for row in ranked[:top_n]]
+        baseline_id = f"{REFERENCE_SCHEME}×{ENTRY_GAP_GRID[0][0]}×支撑要求"
+        if baseline_id in metrics_index and baseline_id not in selected_ids:
+            selected_ids.append(baseline_id)
         print(
-            f"写 all_trades.csv：{len(selected_ids)} / {len(results)} 个组合"
-            f"（Top{top_n} ∪ 基准扫描组合）..."
+            f"写 all_trades.csv：{len(selected_ids)} 个组合"
+            f"（Top{top_n} + 基准）..."
         )
-        # 分析列排在前部，便于后续透视；其余列保持原顺序
         preferred = [
-            "组合", "delta", "命中日期", "股票代码", "股票名称", "行业",
-            "买入日低开(%)", "买入日流通市值(万元)", "量能比(T/T-1)",
-            "涨停日K线实体(%)", "买入日", "计划卖出日", "实际卖出日",
-            "T+1收盘对买入价涨幅", "动态止盈阈值", "止盈区间", "卖出方式",
+            "组合",
+            "要求最低价支撑",
+            "命中日期",
+            "股票代码",
+            "股票名称",
+            "行业",
+            "买入日高开比例(原始价,%)",
+            "买入日流通市值(万元)",
+            "量能比(T/T-1)",
+            "涨停日K线实体(%)",
+            "买入日",
+            "计划卖出日",
+            "实际卖出日",
+            "T+1收盘对买入价涨幅",
+            "动态止盈阈值",
+            "止盈区间",
+            "卖出方式",
         ]
         with (run_dir / "all_trades.csv").open(
             "w", newline="", encoding="utf-8-sig"
         ) as fout:
             wrote_header = False
-            for i, cid in enumerate(selected_ids, start=1):
-                m = metrics_index[cid]
-                cash_args = argparse.Namespace(**cash_args_base, delta=m["delta"])
+            for i, combo_id in enumerate(selected_ids, start=1):
+                row = metrics_index[combo_id]
+                key = (row["低开区间"], row["要求最低价支撑"])
                 trades = cash.calc_trades(
-                    frozen_input[(m["低开"], m["delta名"])], cash_args, m["tiers"],
-                    calendar=calendar, price_cache=delay_cache,
+                    frozen_input[key],
+                    cash_args,
+                    row["tiers"],
+                    calendar=calendar,
+                    price_cache=delay_cache,
                 )
                 trades = trades.merge(enrich, on=["hit_date", "ts_code"], how="left")
-                trades.insert(0, "combo", cid)
-                trades.insert(1, "delta", m["delta"])
-                out = trades.rename(columns={"combo": "组合", **cash.TRADE_CN})
+                trades.insert(0, "combo", combo_id)
+                trades.insert(
+                    1,
+                    "require_low_support",
+                    "要求" if row["要求最低价支撑"] else "不要求",
+                )
+                out = trades.rename(
+                    columns={
+                        "combo": "组合",
+                        "require_low_support": "要求最低价支撑",
+                        **cash.TRADE_CN,
+                    }
+                )
                 order = [c for c in preferred if c in out.columns] + [
                     c for c in out.columns if c not in preferred
                 ]
                 out[order].to_csv(fout, header=not wrote_header, index=False)
                 wrote_header = True
-                print(f"  [明细 {i}/{len(selected_ids)}] {cid}")
+                print(f"  [明细 {i}/{len(selected_ids)}] {combo_id}")
 
+        # 5) run_meta.json
         meta = {
             "generated_at": generated_at,
             "start": start,
@@ -1663,44 +1977,34 @@ def main(argv: list[str] | None = None) -> int:
             "fixed": {
                 "gap_range": list(DEFAULT_GAP),
                 "close_chg_range": list(DEFAULT_CLOSE_CHG),
-                "rise_range": list(DEFAULT_RISE),
-                "rise_days": DEFAULT_RISE_DAYS,
-                "require_low_support": DEFAULT_REQUIRE_LOW_SUPPORT,
+                "n_days_rise": DEFAULT_N_DAYS_RISE,
             },
-            "exit_tiers_grid": [
-                {
-                    "name": name,
-                    "family": family,
-                    "tiers": tiers_to_jsonable(tiers),
-                }
-                for name, tiers, family in EXIT_TIERS_GRID
-            ],
-            "entry_gap_grid": [
-                {"name": name, "range": list(rng)} for name, rng in ENTRY_GAP_GRID
-            ],
-            "delta_grid": [
-                {"name": name, "pct": pct} for name, pct in DELTA_GRID
-            ],
-            "delta_anchor_schemes": list(DELTA_ANCHOR_SCHEMES),
-            "frozen_samples": {
-                "reference_scheme": REFERENCE_SCHEME,
-                "verify_schemes": list(VERIFY_SCHEMES),
-                "verify_diffs": verify_diffs,
-                "per_entry_delta": {
-                    f"{entry_name}×{delta_name}": {
-                        "delta": delta,
-                        "samples": st["samples"],
-                        "unfilled": st["unfilled"],
+            "grid": {
+                "exit_tiers": [
+                    {
+                        "name": name,
+                        "family": family,
+                        "tiers": tiers_to_jsonable(tiers),
                     }
-                    for (entry_name, delta_name), st in frozen_stats.items()
-                },
+                    for name, tiers, family in EXIT_TIERS_GRID
+                ],
+                "entry_gap": [
+                    {"name": name, "range": list(rng), "note": note}
+                    for name, rng, note in ENTRY_GAP_GRID
+                ],
+                "low_support": [
+                    {"value": support, "label": label}
+                    for support, label in LOW_SUPPORT_OPTIONS
+                ],
+                "total_combos": total_combos,
             },
-            "trades_top_n": DEFAULT_TRADES_TOP_N,
-            "trades_combos": selected_ids,
-            "analysis_columns": [
-                "行业", "买入日低开(%)", "买入日流通市值(万元)",
-                "量能比(T/T-1)", "涨停日K线实体(%)",
-            ],
+            "reference_scheme": REFERENCE_SCHEME,
+            "verify_schemes": list(VERIFY_SCHEMES),
+            "verify_diffs": verify_diffs,
+            "sample_stats": {
+                f"{entry_name}×支撑{LOW_SUPPORT_LABELS[support]}": stats
+                for (entry_name, support), stats in sample_stats.items()
+            },
             "cash": {
                 "position": args.position,
                 "lot_mode": args.lot_mode,
@@ -1710,20 +2014,34 @@ def main(argv: list[str] | None = None) -> int:
                 "stamp": args.stamp,
                 "transfer": args.transfer,
                 "slippage": args.slippage,
+                "delta": 0.0,
             },
+            "min_samples_for_ranking": args.min_samples,
+            "trades_top_n": args.top_trades,
+            "trades_combos": selected_ids,
+            "analysis_columns": [
+                "行业",
+                "买入日高开比例(原始价,%)",
+                "买入日流通市值(万元)",
+                "量能比(T/T-1)",
+                "涨停日K线实体(%)",
+            ],
             "hit_samples": len(hits),
             "price_rows": len(prices),
             "results": [
                 {
-                    "组合": r["组合"],
-                    "族": r["族"],
-                    "delta": r["delta"],
-                    "样本数": r["样本数"],
-                    "净盈亏合计": r["净盈亏合计"],
-                    "平均净收益率": r["平均净收益率"],
-                    "胜率": r["胜率"],
+                    "组合": row["组合"],
+                    "分档": row["分档"],
+                    "族": row["族"],
+                    "低开区间": row["低开区间"],
+                    "要求最低价支撑": row["要求最低价支撑"],
+                    "样本数": row["样本数"],
+                    "净盈亏合计": row["净盈亏合计"],
+                    "平均净收益率": row["平均净收益率"],
+                    "t值": row.get("t值"),
+                    "胜率": row["胜率"],
                 }
-                for r in ranked
+                for row in ranked_all
             ],
         }
         (run_dir / "run_meta.json").write_text(
@@ -1732,14 +2050,31 @@ def main(argv: list[str] | None = None) -> int:
         )
 
         report = build_report(
-            args, start, end, results, yearly, tier_breakdown, sell_mode,
-            frozen_stats, verify_diffs, generated_at,
+            args,
+            start,
+            end,
+            results,
+            ranked,
+            tier_effect,
+            entry_effect,
+            family_effect,
+            support_detail,
+            support_summary,
+            best_entry_support,
+            yearly,
+            tier_breakdown,
+            sell_mode,
+            sample_stats,
+            verify_diffs,
+            generated_at,
         )
         (run_dir / "report.md").write_text(report, encoding="utf-8")
+        print(f"报告已生成：{run_dir.resolve()}")
+
+    print("=" * 96)
+    print(f"完成：{len(results)} 个有效组合，耗时 {time.time() - t0:.0f}s")
+    if run_dir is not None:
         print(f"报告目录：{run_dir.resolve()}")
-    else:
-        print("报告目录：未生成（--no-report）")
-    print(f"总耗时：{time.time() - t0:.1f}s")
     return 0
 
 

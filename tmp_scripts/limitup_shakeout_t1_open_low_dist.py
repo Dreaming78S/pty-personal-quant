@@ -44,7 +44,7 @@ os.chdir(ROOT)
 
 from quant.data import db  # noqa: E402
 
-import limitup_shakeout_filtered_returns as filtered  # noqa: E402
+import limitup_shakeout_returns as filtered  # noqa: E402
 
 # ==============================================================================
 # 统计区间：默认覆盖命中表全部历史
@@ -466,19 +466,14 @@ def main(argv: list[str] | None = None) -> int:
           f"（{hits['hit_date'].min()} ~ {hits['hit_date'].max()}）")
 
     calendar = with_retry(filtered.load_calendar, "读取交易日历")
-    hits = filtered.attach_dates(hits, calendar, 5)
-    needed_dates = pd.concat(
-        [hits["hit_date"], hits["t1_date"]], ignore_index=True
-    ).dropna()
-    if needed_dates.empty:
-        raise SystemExit("无法定位任何交易日")
-    min_date, max_date = str(needed_dates.min()), str(needed_dates.max())
+    hits = filtered.attach_dates(hits, calendar, "unlimited")
 
-    print(f"读取行情 {min_date} ~ {max_date} ...")
+    print("读取行情（按样本角色日期精确取数）...")
+    price_keys = list(zip(hits["ts_code"], hits["hit_date"])) + list(
+        zip(hits["ts_code"], hits["t1_date"])
+    )
     prices = with_retry(
-        lambda: filtered.load_prices(
-            sorted(hits["ts_code"].unique()), min_date, max_date
-        ),
+        lambda: filtered.load_prices_by_keys(price_keys),
         "读取行情",
     )
     if prices.empty:
