@@ -1,0 +1,55 @@
+strategy: limit_up_tight_breakout
+
+# 策略：首轮涨停后窄幅缩量整理 N 个交易日，T 日再度放量涨停突破。
+# 价格形态与涨跌幅使用后复权价；涨停判定使用不复权真实价 raw_close 对
+# 交易所除权后昨收 raw_pre_close；成交量单位为手。比例参数填小数（如 0.10
+# 表示 10%）；区间振幅、单日涨跌幅、累计涨跌幅、缩量比例、放量比例等
+# 上限/下限类参数也可填字符串 "unlimited"，表示不限制该条件。
+# 修改本文件后必须重算命中表（显式传 --from-date 才会清空该区间旧口径数据）。
+# 按需指定起始日期：全历史重算用 2018-01-01，只重算近期可传 2026-01-01：
+#   uv run quant hits update -s limit_up_tight_breakout --from-date 2026-01-01
+params:
+  # 首轮涨停日 T-N 与信号日 T 之间的交易日间隔 N 的范围（含端点）。
+  # N 取 [min_gap_days, max_gap_days] 内任意整数，只要有一个 N 满足全部
+  # 条件即命中；N 必须 >= 2，否则没有震荡期。
+  # 代码默认 4~10；当前配置把上限放宽到 20，用于覆盖更长的整理形态。
+  # 调大区间会增加信号，收窄可只保留特定节奏（如 5~7 日）。
+  min_gap_days: 4
+  max_gap_days: 20
+
+  # 涨停判定幅度：raw_close(T) >= raw_pre_close(T) * (1 + limit_pct)。
+  # 0.095 对应主板 10% 涨停制度并留 0.5% 容差。
+  # 默认股票池仅沪深主板；若用 --boards all 扩展到创业板、科创板或北交所，
+  # 20%/30% 涨停不会被该阈值识别，需分板块运行或改用 up_limit 口径。
+  limit_pct: 0.095
+
+  # 震荡期区间最大振幅上限：
+  #   (max(high(T-N+1..T-1)) - min(low(T-N+1..T-1))) / close(T-N) <= range_pct
+  # unlimited 表示不限制区间振幅；填小数则按小数口径，如 0.10 表示 10%。
+  range_pct: "unlimited"
+
+  # 震荡期单日涨跌幅绝对值上限：
+  #   abs(close(d) / close(d-1) - 1) <= daily_pct，d ∈ [T-N+1, T-1]
+  # unlimited 表示不限制单日涨跌幅；填小数则按小数口径，如 0.05 表示 5%，当前 0.70 表示 70%。
+  daily_pct: 0.7
+
+  # 震荡期累计涨跌幅绝对值上限：
+  #   abs(close(T-1) / close(T-N) - 1) <= cumulative_pct
+  # unlimited 表示不限制累计涨跌幅；填小数则按小数口径，如 0.10 表示 10%。
+  cumulative_pct: "unlimited"
+
+  # 震荡期缩量约束（基准均为 T-N 首轮涨停日的成交量 vol(T-N)）：
+  #   日均量：mean(vol(T-N+1..T-1)) <= vol(T-N) * shrink_avg_ratio
+  #   单日最高量：max(vol(T-N+1..T-1)) <= vol(T-N) * shrink_max_ratio
+  # 0.80 表示整理期日均量/单日最高量不超过首轮涨停量的 8 成；
+  # unlimited 表示不限制对应量能。两者都是上限，调小要求缩量更极致。
+  shrink_avg_ratio: 0.80
+  shrink_max_ratio: "unlimited"
+
+  # T 日放量约束：
+  #   相对整理期：vol(T) >= mean(vol(T-N+1..T-1)) * breakout_avg_vol_ratio
+  #   相对首轮涨停：vol(T) >= vol(T-N) * breakout_base_vol_ratio
+  # unlimited 表示不要求放量；填 1.0 表示至少不低于基准量（当前相对首轮涨停量为 1.0），调大要求更强放量。
+  # 两条件需同时满足（除非对应参数为 unlimited）。
+  breakout_avg_vol_ratio: "unlimited"
+  breakout_base_vol_ratio: 1.0

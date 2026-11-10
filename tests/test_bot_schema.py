@@ -9,9 +9,10 @@ def test_allowed_tables_covers_all_schema_tables():
                             *schemas.LIMIT_TABLES})
     assert "ingest_log" in names
     assert "hit_rise_shrink_pullback" in names
+    assert "hit_limit_up_tight_breakout" in names
     assert "limit_up_daily" in names
     assert "limit_down_daily" in names
-    assert len(names) == 22
+    assert len(names) == 23
 
 
 def test_schema_prompt_contains_every_table_and_columns():

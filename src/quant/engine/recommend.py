@@ -31,6 +31,7 @@ STRATEGY_NAMES_ZH = {
     "uptrend_limit_down": "上涨趋势跌停",
     "rps_breakout": "RPS突破",
     "rise_shrink_pullback": "上涨缩量回调",
+    "limit_up_tight_breakout": "涨停后窄幅突破",
 }
 
 TIER_PRIMARY = "重点"

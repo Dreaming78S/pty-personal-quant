@@ -297,6 +297,7 @@ CREATE TABLE IF NOT EXISTS ingest_log (
 HIT_STRATEGIES: tuple[str, ...] = (
     "ma_volume", "turtle_trade", "high_tight_flag", "limit_up_shakeout",
     "uptrend_limit_down", "rps_breakout", "rise_shrink_pullback",
+    "limit_up_tight_breakout",
 )
 
 HIT_COLUMNS: tuple[str, ...] = (

@@ -58,15 +58,15 @@ uv run quant bot serve                                  # 启动长连接常驻�
 
 - 需要 `.env` 配置 `feishu_app_id`、`feishu_app_secret`、`deepseek_api_key`（可选 `deepseek_base_url`、`deepseek_model`）
 - 飞书开放平台需把事件订阅方式设为「长连接」、订阅 `im.message.receive_v1`，并开通 `im:message:send_as_bot`（回复）与私聊 `im:message` 权限；群聊**只**授 `im:message.group_at_msg:readonly`（仅接收 @机器人 的消息，避免机器人响应群里未 @ 的普通消息）后发布版本
-- 安全边界：只允许单条 `SELECT`/`WITH`、表白名单（`schemas` 中 22 张业务表：13 张源表含 `ingest_log` + 7 张 `hit_*` + 2 张 `limit_*_daily`）、`START TRANSACTION READ ONLY`、结果最多 200 行、查询超时 15 秒
+- 安全边界：只允许单条 `SELECT`/`WITH`、表白名单（`schemas` 中 23 张业务表：13 张源表含 `ingest_log` + 8 张 `hit_*` + 2 张 `limit_*_daily`）、`START TRANSACTION READ ONLY`、结果最多 200 行、查询超时 15 秒
 
 ## 策略历史命中（hit_&lt;策略&gt;）
 
-- `uv run quant hits update -s all` 把每个策略历史上每日全部命中的股票写入对应 `hit_<策略名>` 表；默认从 2018-01-01 回填（与行情数据起点一致），水位线存 `ingest_log`，可增量续跑、幂等重跑；七张表统一按 2018 年以来的行情统计。已有旧表（水位线停留在 2024）时需显式 `--from-date 2018-01-01` 才能补齐历史
+- `uv run quant hits update -s all` 把每个策略历史上每日全部命中的股票写入对应 `hit_<策略名>` 表；默认从 2018-01-01 回填（与行情数据起点一致），水位线存 `ingest_log`，可增量续跑、幂等重跑；八张表统一按 2018 年以来的行情统计。已有旧表（水位线停留在 2024）时需显式 `--from-date 2018-01-01` 才能补齐历史
 - 显式传 `--from-date` 视为重算：先清空该区间旧命中再重新计算（策略口径调整后用它刷新历史）
 - 默认口径与 `select` 一致（沪深主板、非ST、上市≥60日、非停牌；`select` 可用 `--boards` 放宽）：`rank` 按 score 降序编号，`score` 为该策略排序分（成交额 / 流通市值 / RPS），`params` 保存当次运行的策略参数快照
 - 字段：`industry`（行业快照）、`prev_hit`（同策略上一交易日是否命中）、`hit_3d/hit_5d/hit_10d`（同策略前 3/5/10 个交易日命中天数，不含当日、停牌日占窗口）、`streak`（同策略连续命中天数，含当日）
-- 历史列只统计**表内已记录的命中**（七张表自 2018-01-02 起；受各策略暖机影响，部分策略的首个信号会晚于该日），每行都可用表自身复核；命中计算加载完整历史面板，结果与水位线、重跑次数无关（单日 `select` 对暖机期内长期停牌股可能略有差异）
+- 历史列只统计**表内已记录的命中**（八张表自 2018-01-02 起；受各策略暖机影响，部分策略的首个信号会晚于该日），每行都可用表自身复核；命中计算加载完整历史面板，结果与水位线、重跑次数无关（单日 `select` 对暖机期内长期停牌股可能略有差异）
 - 命中表是派生数据：不参与 Tushare 抓取、本地 Parquet 缓存与夜间全量重建清空；`quant data status` 可查看行数与水位线
 
 ## 涨跌停股（limit_*_daily）
@@ -97,7 +97,7 @@ uv run quant bot serve                                  # 启动长连接常驻�
 - 参考：`stock_basic`（股票基础信息）、`trade_cal`（交易日历）、`namechange`（名称变更）
 - 新增：`stock_company`（上市公司基本信息）、`new_share`（IPO 新股列表）、`stk_holdertrade`（股东增减持，按公告日逐自然日抓取）
 - 派生：`limit_up_daily`（主板收盘涨停股）、`limit_down_daily`（主板收盘跌停股），由 `quant limit update` 从行情推导
-- 全库共 22 张表：13 张源表含 `ingest_log` + 7 张 `hit_*` + 2 张 `limit_*_daily`（原 Web 平台的 `strategy_definitions` / `backtest_runs` / `backtest_trades` 已下线删除，代码不再创建）
+- 全库共 23 张表：13 张源表含 `ingest_log` + 8 张 `hit_*` + 2 张 `limit_*_daily`（原 Web 平台的 `strategy_definitions` / `backtest_runs` / `backtest_trades` 已下线删除，代码不再创建）
 - `loader` 以 `stock_basic` 的 `ts_code` 为准过滤行情；Tushare 代码变更留下的旧代码别名（如 `000022.SZ`、`000043.SZ`、`300114.SZ`）不会进入行情面板
 
 ### 升级/补数据
@@ -144,6 +144,7 @@ uv run python tmp_scripts/rebuild_data.py --skip-truncate    # 中断后不清�
 | `uptrend_limit_down` | 上升趋势中放量跌停（错杀） | 成交额 |
 | `rps_breakout` | 120 日 RPS≥90 且接近 120 日高点 | RPS |
 | `rise_shrink_pullback` | 近 10 日涨超 20% 后缩量阴线回调 | 成交额 |
+| `limit_up_tight_breakout` | 涨停后窄幅缩量整理 N 日再放量涨停 | 成交额 |
 
 - `configs/strategies/<策略名>.yaml`：策略参数（CLI 会自动读取同名文件）
 - `uv run quant list` 展示的是代码默认参数；实际生效值以 `configs/strategies/<策略名>.yaml` 为准

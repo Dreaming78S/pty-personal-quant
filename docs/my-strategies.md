@@ -8,7 +8,7 @@
 - **价格口径**：形态、均线、动量等一律使用**后复权价**（`open/high/low/close`，等效分红再投资）；**涨停/跌停判定使用不复权真实价** `raw_close`，并与交易所除权后的昨收 `raw_pre_close` 比较（或直接使用 `up_limit/down_limit`）。不能拿前一日原始收盘价作基准，否则除权缺口会被误判为涨跌停。
 - **单位**：`amount` 为千元（Tushare 原始单位，策略内乘 1000 换算为元）；`circ_mv` 为万元；`vol` 为手。
 - **参数配置**：代码内为默认值，实际生效值取 `configs/strategies/<策略名>.yaml`；`params` 含义见各策略的参数表。
-- **修改参数后必须重算历史命中表**：`uv run quant hits update -s <策略名> --from-date 2018-01-01`（七张命中表统一从 2018 年开始统计；详细流程见 README「策略变更标准操作流程」）。`quant select` 是实时计算，改完 yaml 立即生效、无需重算。
+- **修改参数后必须重算历史命中表**：`uv run quant hits update -s <策略名> --from-date 2018-01-01`（八张命中表统一从 2018 年开始统计；详细流程见 README「策略变更标准操作流程」）。`quant select` 是实时计算，改完 yaml 立即生效、无需重算。
 - **暖机（warmup_days）**：引擎为每只股票在信号日之前额外加载的交易日数；信号日 T 实际可用的 K 线数为 `暖机 + 1`（含 T 当日）。行数不足时窗口值为 NaN、该日不产生信号。
 - **排序分与 rank**：每日命中股票按 `score` 降序编号为 `rank`。`score` 由策略的排序口径决定（多数为成交额），仅影响输出顺序与限量（`-n`），不影响是否命中。
 
@@ -23,8 +23,9 @@
 | 5 | `uptrend_limit_down` | 上升趋势中放量跌停（错杀） | 61 | 成交额 | `ma_short=20`, `ma_long=60`, `limit_pct=0.095`, `vol_ma=20`, `vol_ratio=2.0` |
 | 6 | `rps_breakout` | 120 日 RPS≥90 且接近 120 日高点 | 121 | RPS 值 | `window=120`, `rps_threshold=90`, `high_ratio=0.9`, `high_min_bars=60` |
 | 7 | `rise_shrink_pullback` | 近 M 日涨超 X% 后缩量阴线回调 | 11 | 成交额 | `rise_days=10`, `rise_pct=25.0`, `pullback_days=3`, `min_bearish=2`, `vol_shrink=0.80`, `bearish_mode=close_below_open` |
+| 8 | `limit_up_tight_breakout` | 涨停后窄幅缩量整理 N 日再放量涨停 | 11 | 成交额 | `min_gap_days=4`, `max_gap_days=10`, `limit_pct=0.095`, `range_pct=0.10`, `daily_pct=0.04`, `cumulative_pct=0.05`, `shrink_avg_ratio=0.60`, `shrink_max_ratio=0.80`, `breakout_avg_vol_ratio=2.0`, `breakout_base_vol_ratio=1.5` |
 
-> 注：yaml 覆盖了代码默认值的策略：`ma_volume`（`vol_ma=10`、`vol_ratio=1.8`）、`rise_shrink_pullback`（`rise_pct=20.0`、`vol_shrink=0.85`）；其余策略 yaml 与默认值一致。
+> 注：yaml 覆盖了代码默认值的策略：`ma_volume`（`vol_ma=10`、`vol_ratio=1.8`）、`rise_shrink_pullback`（`rise_pct=20.0`、`vol_shrink=0.85`）、`limit_up_tight_breakout`（`max_gap_days=20`、`daily_pct=0.70`、`shrink_avg_ratio=0.80`、`breakout_base_vol_ratio=1.0`，且 `range_pct`/`cumulative_pct`/`shrink_max_ratio`/`breakout_avg_vol_ratio` 设为 `unlimited`）；其余策略 yaml 与默认值一致。
 
 ---
 
@@ -258,6 +259,62 @@
 - `rise_pct` 调大 → 要求前期涨幅更陡；`vol_shrink` 调小 → 要求缩量更极致。
 - `min_bearish` 调大（如 = P）→ 要求近 P 日全部收阴。
 - 改完 yaml 后需重算命中表（`uv run quant hits update -s rise_shrink_pullback --from-date 2018-01-01`）。
+
+---
+
+## 8. LimitUpTightBreakout — 涨停后窄幅缩量整理再放量涨停
+
+**定位**：首轮涨停后进入 N 日窄幅、缩量、无明显趋势的锁仓整理，随后今日再度放量涨停突破，捕捉"涨停—整理—再涨停"的强势二波启动。
+
+### 参数
+
+| 参数 | 类型 | 默认 | 含义 | 说明 |
+|---|---|---|---|---|
+| `min_gap_days` | int | 4 | 间隔 N 的下限 | T-N 为首轮涨停日；必须 ≥2（至少保留 1 个整理日） |
+| `max_gap_days` | int | 10 | 间隔 N 的上限 | 与 `min_gap_days` 构成可调区间，区间内任一 N 满足即命中 |
+| `limit_pct` | float | 0.095 | 涨停判定幅度 | `raw_close >= raw_pre_close × (1 + limit_pct)`，主板 10% 制度留 0.5% 容差 |
+| `range_pct` | float \| `"unlimited"` | 0.10 | 整理期最大振幅 | `(max(high) - min(low)) / close(T-N) <= 10%`；`unlimited` = 不限制 |
+| `daily_pct` | float \| `"unlimited"` | 0.04 | 整理期单日涨跌幅上限 | 任意整理日 `abs(close / close(T-1) - 1) <= 4%`；`unlimited` = 不限制 |
+| `cumulative_pct` | float \| `"unlimited"` | 0.05 | 整理期累计涨跌幅上限 | `abs(close(T-1) / close(T-N) - 1) <= 5%`；`unlimited` = 不限制 |
+| `shrink_avg_ratio` | float \| `"unlimited"` | 0.60 | 整理期日均量上限 | `mean(vol(T-N+1..T-1)) <= 60% × vol(T-N)`；`unlimited` = 不限制 |
+| `shrink_max_ratio` | float \| `"unlimited"` | 0.80 | 整理期单日最高量上限 | `max(vol(T-N+1..T-1)) <= 80% × vol(T-N)`；`unlimited` = 不限制 |
+| `breakout_avg_vol_ratio` | float \| `"unlimited"` | 2.0 | 突破日放量（相对整理期均量） | `vol(T) >= 2.0 × 整理期日均量`；`unlimited` = 不要求 |
+| `breakout_base_vol_ratio` | float \| `"unlimited"` | 1.5 | 突破日放量（相对首轮涨停量） | `vol(T) >= 1.5 × vol(T-N)`；`unlimited` = 不要求 |
+
+> `unlimited` 是字符串，表示跳过对应的上限/下限条件；数值口径为小数（`0.10` = 10%，`0.80` = 80%）。
+
+### 选股条件（T 为信号日）
+
+1. **今日涨停**：`raw_close(T) >= raw_pre_close(T) × (1 + limit_pct)`。
+2. **首轮涨停**：存在 `N ∈ [min_gap_days, max_gap_days]`，使 `raw_close(T-N) >= raw_pre_close(T-N) × (1 + limit_pct)`。
+3. **窄幅震荡整理**（`T-N+1 .. T-1` 共 N-1 个交易日，后复权价）：
+   - 区间振幅：`(max(high) - min(low)) / close(T-N) <= range_pct`；
+   - 单日波动：每日 `abs(close / close(前一交易日) - 1) <= daily_pct`；
+   - 累计涨跌：`abs(close(T-1) / close(T-N) - 1) <= cumulative_pct`。
+4. **整理期缩量**：
+   - 日均量：`mean(vol(T-N+1..T-1)) <= shrink_avg_ratio × vol(T-N)`；
+   - 单日最高量：`max(vol(T-N+1..T-1)) <= shrink_max_ratio × vol(T-N)`。
+5. **今日放量**：
+   - 相对整理期：`vol(T) >= breakout_avg_vol_ratio × 整理期日均量`；
+   - 相对首轮涨停：`vol(T) >= breakout_base_vol_ratio × vol(T-N)`。
+
+### 说明
+
+- 暖机 = `max_gap_days + 1` = 11。
+- 排序：成交额。
+- 对区间内每个 N 独立计算整套条件，任一 N 满足即命中（取并集）；同一股票同日只记 1 行。
+- 上限/下限类参数填 `unlimited` 时跳过该条件；例如当前 yaml 将区间振幅、累计涨跌、单日最高量和相对整理期均量的突破放量设为不限制，只保留首轮涨停、N 区间、单日涨跌幅 70%、均量缩量和相对首轮涨停量 1.0 的约束。
+- 价格形态与涨跌幅用**后复权价**（除权日不会被误判为大阳/大阴），涨停判定用**不复权真实价**对交易所除权后昨收 `raw_pre_close`。
+- 默认按主板 10% 涨停制度设计（`limit_pct=0.095`）；如用 `--boards all` 扩展到创业板/科创板/北交所，20%/30% 涨停不会被该阈值识别，需分板块运行或改用 `up_limit` 口径。
+- 整理期按行情面板中的实际交易日行数计算；停牌日没有 K 线，因此不占整理窗口。
+
+### 调参影响
+
+- `min_gap_days` / `max_gap_days` 放宽会覆盖更多整理天数，信号增多；收窄可只保留特定节奏（如 5~7 日）。
+- `range_pct`、`daily_pct`、`cumulative_pct` 调小 → 要求整理更窄更平；`shrink_avg_ratio`、`shrink_max_ratio` 调小 → 要求缩量更极致。
+- 设为 `unlimited` 会直接跳过对应条件，信号会明显增多（当前 yaml 保留单日涨跌幅 70%、均量缩量 80%、相对首轮涨停量 1.0 等约束，命中数仍会明显多于默认口径）。
+- `breakout_avg_vol_ratio`、`breakout_base_vol_ratio` 调大 → 要求突破日量能更强；在缩量条件成立时，后者通常是更紧的约束。
+- 该形态参数较敏感，改完 yaml 后需重算命中表（`uv run quant hits update -s limit_up_tight_breakout --from-date 2018-01-01`）。
 
 ---
 
