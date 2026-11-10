@@ -26,10 +26,11 @@
 卖出规则（动态止盈，阈值来自 quant.engine.exit_tiers.DEFAULT_EXIT_TIERS，
 可用 --exit-tiers / --open-exit 覆盖）：
 - 分档涨幅 = close(T+1) / 买入基准价 - 1（delta=0 时即原日内涨幅 close/open-1）；
-- T+2 开盘价高于 买入基准价×(1+阈值)：按 T+2 开盘价卖出；
-- 否则 T+2 最高价触及目标价：按目标价卖出；
-- 否则 T+2 收盘卖出；若收盘跌停，视为卖不出，顺延到下一交易日开盘，
-  仍跌停继续顺延，最多 --max-delay-days 个交易日；
+- 持有窗口为 T+2 .. T+N（N 默认 2，可用 --sell-n 调整）：
+  - 某日开盘价高于 买入基准价×(1+阈值)：按该日开盘价卖出；
+  - 否则该日最高价触及目标价：按目标价卖出；
+  - 一直未触发：T+N 收盘卖出；若收盘跌停，视为卖不出，顺延到下一交易日开盘，
+    仍跌停继续顺延，最多 --max-delay-days 个交易日；
 - 超期仍无法卖出时按最后可用收盘价做市值估值，并在报告中单独标注。
 
 每笔按预算取最大整数手（100 股/手），扣除佣金（默认 0.015%，最低 5 元）、
@@ -42,13 +43,15 @@
     uv run python tmp_scripts/limitup_shakeout_returns.py --gap 0.05 0.11 --close-chg 0.02 0.11 --n-days-rise 5 -0.1 0.2 --entry-gap -0.11 0 --open-exit 0.02
     uv run python tmp_scripts/limitup_shakeout_returns.py --exit-tiers "[[null,-0.05,-0.02],[-0.05,0,0.01],[0,0.05,0.02],[0.05,0.07,0.03],[0.07,null,0.04]]"
     uv run python tmp_scripts/limitup_shakeout_returns.py --delta 1.5 --report   # 开盘下方 1.5% 限价买入
+    uv run python tmp_scripts/limitup_shakeout_returns.py --sell-n 3 --report  # 最多持有到 T+3
     uv run python tmp_scripts/limitup_shakeout_returns.py --no-require-low-support --report
 
 样本来自 hit_limit_up_shakeout（策略名 limit_up_shakeout）。若策略逻辑或参数有调整，先执行：
     uv run quant hits update -s limit_up_shakeout --from-date 2018-01-01
 
 性能：行情按 (ts_code, trade_date) 主键精确取数（不再整段拉取数百万行日线）；
-calc_trades 为向量化实现，只有“T+2 收盘跌停顺延”的少数样本逐笔查缓存。
+calc_trades 使用 build_samples 预先扫描好的卖出计划，
+只有“T+N 收盘卖出且跌停”的少数样本逐笔查缓存。
 """
 
 from __future__ import annotations
@@ -76,7 +79,6 @@ from quant.engine.exit_tiers import (  # noqa: E402
     apply_exit_thresholds,
     format_tiers_summary,
     parse_exit_tiers,
-    tier_index,
     tier_labels,
     tiers_from_scalar,
     tiers_to_jsonable,
@@ -84,8 +86,8 @@ from quant.engine.exit_tiers import (  # noqa: E402
 
 # ==============================================================================
 # 统一默认参数
-DEFAULT_START = "20180101"
-DEFAULT_END = "20261101"
+DEFAULT_START = "20251101"
+DEFAULT_END = "latest"
 
 DEFAULT_GAP = (0.00, 0.11)
 DEFAULT_CLOSE_CHG = (0.0, 0.11)
@@ -106,9 +108,12 @@ DEFAULT_ENTRY_GAP: tuple[tuple[float, float], ...] = ((-0.06, -0.01), (-0.09, -0
 DEFAULT_DELTA = 0
 DEFAULT_REQUIRE_LOW_SUPPORT = True
 
+# 最长持有到 T+N（交易日）：T+1 买入，T+2 起盘中触及止盈目标即卖出，
+# 一直未触发则 T+N 收盘卖出。N=2 等价于原来的 T+2 固定卖出。
+DEFAULT_SELL_N = 2
 
 
-DEFAULT_GENERATE_REPORT = True
+DEFAULT_GENERATE_REPORT = False
 
 
 # 现金口径
@@ -137,6 +142,7 @@ TRADE_CN = {
     "buy_date": "买入日",
     "plan_sell_date": "计划卖出日",
     "sell_date": "实际卖出日",
+    "exit_offset": "卖出偏移(交易日)",
     "t1_intraday_ret": "T+1收盘对买入价涨幅",
     "exit_threshold": "动态止盈阈值",
     "exit_tier": "止盈区间",
@@ -157,7 +163,7 @@ TRADE_CN = {
     "net_return": "净收益率",
     "exit_status": "卖出状态",
     "is_delayed": "是否延期卖出",
-    "close_limit_down": "原卖出日是否收盘跌停",
+    "close_limit_down": "T+N收盘是否跌停",
     "error": "备注",
 }
 
@@ -193,7 +199,7 @@ CASH_TRADES_CN = {
 }
 CASH_TRADES_CN["t1_intraday_ret"] = "买入日毛收益率"
 
-# 列顺序：基本信息 → 日期 → T 日盘后 → T+1 开盘/买入 → T+1 收盘 → 止盈/卖出 → T+2 → 现金结果
+# 列顺序：基本信息 → 日期 → T 日盘后 → T+1 开盘/买入 → T+1 收盘 → 止盈/卖出 → 卖出后路径 → 现金结果
 # 同一阶段内按“先价格/涨幅，后执行结果”排列，避免把买入价和卖出价混在一起。
 CASH_TRADES_COLUMN_ORDER = [
     # 基本信息
@@ -205,6 +211,7 @@ CASH_TRADES_COLUMN_ORDER = [
     "buy_date",
     "plan_sell_date",
     "sell_date",
+    "exit_offset",
     # T 日盘后（选股时可知）
     "t_circ_mv_yi",
     "amount_ratio_t_prev",
@@ -231,7 +238,7 @@ CASH_TRADES_COLUMN_ORDER = [
     "delay_days",
     "is_delayed",
     "close_limit_down",
-    # T+2 卖出后的路径指标
+    # T+2 路径指标（卖出窗口首日，卖出后可知）
     "t2_close_vs_t1_open_adj",
     "t2_high_vs_t1_open_adj",
     # 现金结果
@@ -284,6 +291,7 @@ TRADE_COLUMNS = [
     "buy_date",
     "plan_sell_date",
     "sell_date",
+    "exit_offset",
     "t1_intraday_ret",
     "exit_threshold",
     "exit_tier",
@@ -360,9 +368,12 @@ def fmt_entry_gap_ranges(value) -> str:
     return " ∪ ".join(f"[{lo:.2%}, {hi:.2%}]" for lo, hi in ranges)
 
 
-def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+def parse_args(
+    argv: list[str] | None = None, description: str | None = None
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
+        description=description
+        or (
             "limit_up_shakeout 命中样本二次筛选后的现金盈亏"
             "（整手、费用、滑点、跌停顺延）"
         )
@@ -412,7 +423,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
             "T+1 买入低开闭区间（小数，原始价，相对 T 日收盘）。"
             "可写 2 个数（单区间）或 2N 个数（多区间并集），"
             "例如：--entry-gap -0.06 -0.01 -0.09 -0.08。"
-            f"默认 {fmt_entry_gap_ranges(DEFAULT_ENTRY_GAP)}"
+            f"默认 {fmt_entry_gap_ranges(DEFAULT_ENTRY_GAP).replace('%', '%%')}"
         ),
     )
     parser.add_argument(
@@ -465,6 +476,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="手数取整：nearest=最接近预算，floor=不超过预算",
     )
     parser.add_argument(
+        "--sell-n",
+        "--hold-days",
+        dest="sell_n",
+        type=int,
+        default=DEFAULT_SELL_N,
+        metavar="N",
+        help=(
+            "最长持有到 T+N（交易日），默认 "
+            f"{DEFAULT_SELL_N}；T+1 买入后，T+2 起每日盘中触及止盈目标"
+            "即卖出，一直未触发则 T+N 收盘卖出。N=2 等价于原来的 T+2 固定卖出"
+        ),
+    )
+    parser.add_argument(
         "--max-delay-days",
         type=int,
         default=DEFAULT_MAX_DELAY_DAYS,
@@ -504,13 +528,16 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--report",
         dest="generate_report",
         action="store_true",
-        help="生成 report.md / CSV（默认关闭）",
+        help=(
+            "生成 report.md / CSV"
+            f"（默认{'生成' if DEFAULT_GENERATE_REPORT else '不生成'}）"
+        ),
     )
     parser.add_argument(
         "--no-report",
         dest="generate_report",
         action="store_false",
-        help="只打印控制台，不写报告文件（默认）",
+        help="只打印控制台，不写报告文件",
     )
     parser.set_defaults(generate_report=DEFAULT_GENERATE_REPORT)
     parser.add_argument(
@@ -587,20 +614,22 @@ def compact_date(value: str) -> str:
     return pd.Timestamp(value).strftime("%Y%m%d")
 
 
-def resolve_end_date(value: str) -> str:
+def resolve_end_date(value: str, hit_table: str = "hit_limit_up_shakeout") -> str:
     if value is None or str(value).strip().lower() in ("", "latest", "none"):
-        max_hit = db.scalar("SELECT MAX(trade_date) FROM hit_limit_up_shakeout")
+        max_hit = db.scalar(f"SELECT MAX(trade_date) FROM {hit_table}")
         if not max_hit:
-            raise SystemExit("hit_limit_up_shakeout 为空，请先执行 hits update")
+            raise SystemExit(f"{hit_table} 为空，请先执行 hits update")
         return str(max_hit)
     return compact_date(value)
 
 
-def load_hits(start: str, end: str) -> pd.DataFrame:
+def load_hits(
+    start: str, end: str, hit_table: str = "hit_limit_up_shakeout"
+) -> pd.DataFrame:
     df = db.read_df(
-        """
+        f"""
         SELECT trade_date, ts_code, name, industry
-        FROM hit_limit_up_shakeout
+        FROM {hit_table}
         WHERE trade_date BETWEEN %s AND %s
         ORDER BY trade_date, ts_code
         """,
@@ -628,12 +657,17 @@ def load_calendar() -> list[str]:
     return df["cal_date"].astype(str).tolist()
 
 
-def attach_dates(hits: pd.DataFrame, calendar: list[str], n_days_rise) -> pd.DataFrame:
+def attach_dates(
+    hits: pd.DataFrame,
+    calendar: list[str],
+    n_days_rise,
+    sell_n: int = DEFAULT_SELL_N,
+) -> pd.DataFrame:
     date_pos = {d: i for i, d in enumerate(calendar)}
     out = hits.copy()
     out["cal_pos"] = out["hit_date"].map(date_pos)
 
-    offsets = [(-1, "prev_date"), (1, "t1_date"), (2, "t2_date")]
+    offsets = [(-1, "prev_date"), (1, "t1_date")]
     rise_cfg = normalize_n_days_rise(n_days_rise)
     if rise_cfg is not None:
         offsets.append((-rise_cfg[0], "rise_ref_date"))
@@ -646,6 +680,19 @@ def attach_dates(hits: pd.DataFrame, calendar: list[str], n_days_rise) -> pd.Dat
             target = int(pos) + offset
             values.append(calendar[target] if 0 <= target < len(calendar) else None)
         out[name] = values
+
+    # 卖出窗口：T+2 .. T+N（含端点）。T+1 买入当天不可卖（A 股 T+1）。
+    out["sell_dates"] = [
+        calendar[int(pos) + 2 : int(pos) + 1 + sell_n] if pd.notna(pos) else []
+        for pos in out["cal_pos"]
+    ]
+    for k in range(2, sell_n + 1):
+        out[f"t{k}_date"] = out["sell_dates"].map(
+            lambda dates, i=k - 2: dates[i] if len(dates) > i else None
+        )
+    out["final_sell_date"] = out["sell_dates"].map(
+        lambda dates: dates[-1] if dates else None
+    )
     return out
 
 
@@ -829,11 +876,15 @@ def _finalize_prices(prices: pd.DataFrame) -> pd.DataFrame:
 def price_keys_for_hits(hits: pd.DataFrame) -> set[tuple[str, str]]:
     """命中样本筛选阶段需要的全部 (代码, 日期) 键。"""
     keys: set[tuple[str, str]] = set()
-    for date_col in ("hit_date", "prev_date", "rise_ref_date", "t1_date", "t2_date"):
+    for date_col in ("hit_date", "prev_date", "rise_ref_date", "t1_date"):
         if date_col not in hits.columns:
             continue
         for code, date in zip(hits["ts_code"], hits[date_col]):
             if pd.notna(date):
+                keys.add((str(code), str(date)))
+    if "sell_dates" in hits.columns:
+        for code, dates in zip(hits["ts_code"], hits["sell_dates"]):
+            for date in dates or []:
                 keys.add((str(code), str(date)))
     return keys
 
@@ -843,7 +894,7 @@ def delay_price_keys(
 ) -> set[tuple[str, str]]:
     """顺延卖出可能用到的 (代码, 日期) 键。
 
-    只有“T+2 收盘跌停”的样本才会进入顺延分支；取这些样本之后
+    只有“T+N 收盘卖出且收盘跌停”的样本才会进入顺延分支；取这些样本之后
     max_delay_days 个交易日，保证 calc_trades 的顺延查价全部命中缓存。
     """
     if max_delay_days <= 0:
@@ -851,11 +902,13 @@ def delay_price_keys(
     date_pos = {d: i for i, d in enumerate(calendar)}
     candidates = samples.loc[
         samples["included"] & samples["sell_limit_down"].astype(bool),
-        ["ts_code", "t2_date"],
+        ["ts_code", "final_sell_date"],
     ]
     keys: set[tuple[str, str]] = set()
-    for code, t2_date in zip(candidates["ts_code"], candidates["t2_date"]):
-        pos = date_pos.get(str(t2_date))
+    for code, final_sell_date in zip(
+        candidates["ts_code"], candidates["final_sell_date"]
+    ):
+        pos = date_pos.get(str(final_sell_date))
         if pos is None:
             continue
         for date in calendar[pos + 1 : pos + 1 + max_delay_days]:
@@ -883,6 +936,7 @@ def build_samples(
     delta_pct: float = 0.0,
     require_low_support: bool = False,
     compute_reasons: bool = True,
+    sell_n: int = DEFAULT_SELL_N,
 ) -> pd.DataFrame:
     """构建筛选样本框架（理论口径与现金口径共用）。
 
@@ -895,7 +949,10 @@ def build_samples(
 
     delta_pct 为 T+1 限价买入下探深度（百分点）：0 = 开盘价买入（原规则）；
     >0 时买入价 = open(T+1) - (delta_pct/100)×close(T)，T+1 最低价触及才成交，
-    未成交样本不纳入（included=False）。止盈分档涨幅与 T+2 涨幅全部以买入价为基准。
+    未成交样本不纳入（included=False）。止盈分档涨幅与卖出价均以买入价为基准。
+
+    sell_n 为最长持有到 T+N（默认 2）：T+2 起逐日检查，开盘高于目标价按开盘价
+    卖出、盘中最高价触及目标价按目标价卖出；一直未触发则 T+N 收盘卖出。
 
     compute_reasons=False 时跳过逐行排除原因（网格搜索用不到，可省数秒）。
     """
@@ -952,20 +1009,24 @@ def build_samples(
             "adj_close": "t1_adj_close",
         },
     )
-    samples = _merge_role(
-        samples,
-        prices,
-        "t2_date",
-        {
-            "open": "t2_open_raw",
-            "high": "t2_high_raw",
-            "close": "t2_close_raw",
-            "down_limit": "t2_down_limit",
-            "adj_open": "t2_adj_open",
-            "adj_high": "t2_adj_high",
-            "adj_close": "t2_adj_close",
-        },
-    )
+    for k in range(2, sell_n + 1):
+        samples = _merge_role(
+            samples,
+            prices,
+            f"t{k}_date",
+            {
+                "open": f"t{k}_open_raw",
+                "high": f"t{k}_high_raw",
+                "close": f"t{k}_close_raw",
+                "down_limit": f"t{k}_down_limit",
+                "adj_open": f"t{k}_adj_open",
+                "adj_high": f"t{k}_adj_high",
+                "adj_close": f"t{k}_adj_close",
+            },
+        )
+
+    # 多次 merge 后 DataFrame 可能高度碎片化，这里复制一次以合并底层块。
+    samples = samples.copy()
 
     samples["gap_open"] = samples["t_open_raw"] / samples["t_pre_close_raw"] - 1.0
     samples["gap_open_prev_raw"] = (
@@ -1077,56 +1138,124 @@ def build_samples(
         categories=list(tier_labels(exit_tiers)),
         ordered=True,
     )
-    # T+2 各价对买入价的涨幅（后复权/不复权），是止盈判定与收益计算的唯一基准；
-    # delta=0 时 buy_adj/buy_price_raw 即 T+1 开盘价，与原口径完全一致
-    samples["t2_open_ret"] = samples["t2_adj_open"] / samples["buy_adj"] - 1.0
-    samples["t2_high_ret"] = samples["t2_adj_high"] / samples["buy_adj"] - 1.0
-    samples["t2_close_ret"] = samples["t2_adj_close"] / samples["buy_adj"] - 1.0
-    samples["t2_open_ret_raw"] = samples["t2_open_raw"] / samples["buy_price_raw"] - 1.0
-    samples["t2_high_ret_raw"] = samples["t2_high_raw"] / samples["buy_price_raw"] - 1.0
-    samples["t2_close_ret_raw"] = (
-        samples["t2_close_raw"] / samples["buy_price_raw"] - 1.0
-    )
-    samples["exit_at_open"] = samples["t2_open_ret"].gt(samples["exit_threshold"])
-    samples["exit_intraday"] = ~samples["exit_at_open"] & samples["t2_high_ret"].ge(
-        samples["exit_threshold"]
-    )
-    samples["return_adj"] = samples["t2_close_ret"]
-    samples["return_raw"] = samples["t2_close_ret_raw"]
-    samples.loc[samples["exit_intraday"], "return_adj"] = samples.loc[
-        samples["exit_intraday"], "exit_threshold"
-    ]
-    samples.loc[samples["exit_intraday"], "return_raw"] = samples.loc[
-        samples["exit_intraday"], "exit_threshold"
-    ]
-    samples.loc[samples["exit_at_open"], "return_adj"] = samples.loc[
-        samples["exit_at_open"], "t2_open_ret"
-    ]
-    samples.loc[samples["exit_at_open"], "return_raw"] = samples.loc[
-        samples["exit_at_open"], "t2_open_ret_raw"
-    ]
-    # 开盘未触发止盈且缺少最高价时，无法判断盘中是否触及，按缺失处理。
-    missing_high = ~samples["exit_at_open"] & samples["t2_high_ret"].isna()
-    samples.loc[missing_high, "return_adj"] = np.nan
-    samples.loc[missing_high, "return_raw"] = np.nan
-    # T+1 收盘价或买入价缺失（涨幅无效）时无法分档，止盈阈值不可确定，按缺失处理。
-    no_threshold = samples["exit_threshold"].isna()
-    samples.loc[no_threshold, "return_adj"] = np.nan
-    samples.loc[no_threshold, "return_raw"] = np.nan
+    # T+2..T+N 各价对买入价的涨幅（后复权/不复权）：
+    # 卖出判定从 T+2 开始，逐日检查开盘/最高价是否触及止盈目标；
+    # 一直未触发则在 T+N 收盘卖出。
+    for k in range(2, sell_n + 1):
+        samples[f"t{k}_open_ret"] = samples[f"t{k}_adj_open"] / samples["buy_adj"] - 1.0
+        samples[f"t{k}_high_ret"] = samples[f"t{k}_adj_high"] / samples["buy_adj"] - 1.0
+        samples[f"t{k}_close_ret"] = (
+            samples[f"t{k}_adj_close"] / samples["buy_adj"] - 1.0
+        )
+        samples[f"t{k}_open_ret_raw"] = (
+            samples[f"t{k}_open_raw"] / samples["buy_price_raw"] - 1.0
+        )
+        samples[f"t{k}_high_ret_raw"] = (
+            samples[f"t{k}_high_raw"] / samples["buy_price_raw"] - 1.0
+        )
+        samples[f"t{k}_close_ret_raw"] = (
+            samples[f"t{k}_close_raw"] / samples["buy_price_raw"] - 1.0
+        )
 
-    samples["exit_type"] = "T+2 收盘"
-    samples.loc[samples["exit_intraday"], "exit_type"] = "T+2 盘中"
-    samples.loc[samples["exit_at_open"], "exit_type"] = "T+2 开盘"
-    samples.loc[samples["return_adj"].isna(), "exit_type"] = None
+    # 逐日扫描卖出窗口：先看开盘（跳空高于目标价），再看盘中最高价
+    # （触及目标价即按目标价成交）。一旦触发即锁定卖出日，后续不再参与。
+    samples["exit_at_open"] = False
+    samples["exit_intraday"] = False
+    samples["exit_offset"] = np.nan
+    samples["exit_date"] = None
+    samples["exit_price_raw"] = np.nan
+    samples["return_adj"] = np.nan
+    samples["return_raw"] = np.nan
+    samples["exit_type"] = None
+    samples["exit_status"] = "已卖出"
+    samples["exit_error"] = ""
 
-    # 卖出日（T+2）收盘是否跌停；只做统计备注，不改变收益计算。
-    samples["sell_down_limit_missing"] = samples["t2_down_limit"].isna() | samples[
-        "t2_down_limit"
-    ].le(0)
-    samples["sell_limit_down"] = (
-        samples["t2_down_limit"].gt(0)
-        & samples["t2_close_raw"].le(samples["t2_down_limit"] + LIMIT_EPS)
-    ).fillna(False)
+    target_raw = samples["buy_price_raw"] * (1.0 + samples["exit_threshold"])
+    remaining = samples["buy_filled"].astype(bool) & samples["exit_threshold"].notna()
+
+    for k in range(2, sell_n + 1):
+        open_ret = samples[f"t{k}_open_ret"]
+        high_ret = samples[f"t{k}_high_ret"]
+        open_raw = samples[f"t{k}_open_raw"]
+        high_raw = samples[f"t{k}_high_raw"]
+        date_col = samples[f"t{k}_date"]
+
+        hit_open = remaining & open_ret.notna() & (open_ret > samples["exit_threshold"])
+        hit_intraday = (
+            remaining
+            & ~hit_open
+            & high_ret.notna()
+            & (high_ret >= samples["exit_threshold"])
+        )
+
+        samples.loc[hit_open, "exit_at_open"] = True
+        samples.loc[hit_open, "return_adj"] = open_ret[hit_open]
+        samples.loc[hit_open, "return_raw"] = (
+            open_raw[hit_open] / samples.loc[hit_open, "buy_price_raw"] - 1.0
+        )
+        samples.loc[hit_open, "exit_price_raw"] = open_raw[hit_open]
+        samples.loc[hit_open, "exit_type"] = f"T+{k} 开盘"
+        samples.loc[hit_open, "exit_date"] = date_col[hit_open]
+        samples.loc[hit_open, "exit_offset"] = k
+
+        samples.loc[hit_intraday, "exit_intraday"] = True
+        samples.loc[hit_intraday, "return_adj"] = samples.loc[
+            hit_intraday, "exit_threshold"
+        ]
+        samples.loc[hit_intraday, "return_raw"] = samples.loc[
+            hit_intraday, "exit_threshold"
+        ]
+        samples.loc[hit_intraday, "exit_price_raw"] = np.minimum(
+            target_raw[hit_intraday], high_raw[hit_intraday]
+        )
+        samples.loc[hit_intraday, "exit_type"] = f"T+{k} 盘中"
+        samples.loc[hit_intraday, "exit_date"] = date_col[hit_intraday]
+        samples.loc[hit_intraday, "exit_offset"] = k
+
+        remaining &= ~(hit_open | hit_intraday)
+
+    # 整个窗口都未触及目标价：按 T+N 收盘卖出。
+    last_k = sell_n
+    last_close_ret = samples[f"t{last_k}_close_ret"]
+    hit_close = remaining & last_close_ret.notna()
+    samples.loc[hit_close, "return_adj"] = last_close_ret[hit_close]
+    samples.loc[hit_close, "return_raw"] = (
+        samples.loc[hit_close, f"t{last_k}_close_raw"]
+        / samples.loc[hit_close, "buy_price_raw"]
+        - 1.0
+    )
+    samples.loc[hit_close, "exit_price_raw"] = samples.loc[
+        hit_close, f"t{last_k}_close_raw"
+    ]
+    samples.loc[hit_close, "exit_type"] = f"T+{last_k} 收盘"
+    samples.loc[hit_close, "exit_date"] = samples.loc[hit_close, f"t{last_k}_date"]
+    samples.loc[hit_close, "exit_offset"] = last_k
+
+    # 卖出日（T+N）收盘是否跌停；只对“T+N 收盘卖出”分支做统计/顺延标记。
+    samples["sell_down_limit_missing"] = False
+    samples["sell_limit_down"] = False
+    last_down_limit = samples[f"t{last_k}_down_limit"]
+    last_close_raw = samples[f"t{last_k}_close_raw"]
+    samples.loc[hit_close, "sell_down_limit_missing"] = (
+        last_down_limit.isna() | last_down_limit.le(0)
+    )[hit_close]
+    samples.loc[hit_close, "sell_limit_down"] = (
+        last_down_limit.gt(0) & last_close_raw.le(last_down_limit + LIMIT_EPS)
+    ).fillna(False)[hit_close]
+
+    # 无法分档 / 整个卖出窗口都没有可用行情
+    no_threshold = samples["buy_filled"].astype(bool) & samples["exit_threshold"].isna()
+    samples.loc[no_threshold, "exit_status"] = "无法分档"
+    samples.loc[no_threshold, "exit_error"] = (
+        "T+1收盘对买入价涨幅无效，无法落入任何止盈档位"
+    )
+    no_exit = (
+        samples["buy_filled"].astype(bool)
+        & samples["exit_threshold"].notna()
+        & samples["return_adj"].isna()
+    )
+    samples.loc[no_exit, "exit_status"] = f"无T+{sell_n}行情"
+    samples.loc[no_exit, "exit_error"] = f"缺少T+2..T+{sell_n}卖出行情"
 
     numeric_cols = [
         "gap_open",
@@ -1138,12 +1267,6 @@ def build_samples(
         "ret_rise",
         "t1_intraday_ret",
         "exit_threshold",
-        "t2_open_ret",
-        "t2_high_ret",
-        "t2_close_ret",
-        "t2_open_ret_raw",
-        "t2_high_ret_raw",
-        "t2_close_ret_raw",
         "return_adj",
         "return_raw",
         "t1_intraday_adj",
@@ -1158,6 +1281,17 @@ def build_samples(
         "amount_ratio_t_prev",
         "amount_ratio_t1_t",
     ]
+    for k in range(2, sell_n + 1):
+        numeric_cols.extend(
+            [
+                f"t{k}_open_ret",
+                f"t{k}_high_ret",
+                f"t{k}_close_ret",
+                f"t{k}_open_ret_raw",
+                f"t{k}_high_ret_raw",
+                f"t{k}_close_ret_raw",
+            ]
+        )
     for col in numeric_cols:
         samples[col] = samples[col].replace([np.inf, -np.inf], np.nan)
 
@@ -1288,18 +1422,15 @@ def _exclusion_reason(
             reasons.append("缺少T+1最低价，无法判定限价成交")
         else:
             reasons.append("T+1日内未触及限价买入价")
-    if pd.isna(row["t1_date"]) or pd.isna(row["t2_date"]):
-        reasons.append("缺少T+1/T+2交易日")
+    if pd.isna(row["t1_date"]) or pd.isna(row["final_sell_date"]):
+        reasons.append("缺少T+1或T+N交易日")
     elif pd.isna(row["exit_threshold"]):
         if pd.isna(row["buy_price_raw"]):
             reasons.append("买入价缺失，无法确定止盈档位")
         else:
             reasons.append("缺少T+1收盘价，无法确定止盈档位")
     elif pd.isna(row["return_adj"]):
-        if not bool(row["exit_at_open"]) and pd.isna(row["t2_high_ret"]):
-            reasons.append("缺少T+2最高价，无法判断盘中止盈")
-        else:
-            reasons.append("缺少T+1开盘价或T+2行情（停牌/行情未产生）")
+        reasons.append("缺少T+2..T+N卖出行情（停牌/行情未产生）")
     return "；".join(dict.fromkeys(reasons))
 
 
@@ -1391,9 +1522,9 @@ def is_limit_down(price: float | None, down_limit: float | None) -> bool:
 def build_cash_input(included: pd.DataFrame) -> pd.DataFrame:
     """把 build_samples 的 included 样本转成现金计算的输入列。
 
-    「动态止盈阈值」「止盈区间」等列只是生成时的参考快照；
-    calc_trades 会按当前分档参数重新判定卖出分支与阈值，
-    并按当前 --delta 重新判定限价买入（不沿用生成时的买入价列）。
+    卖出路径（T+2..T+N 哪一天触发止盈、或 T+N 收盘卖出）已在 build_samples
+    中按当前 exit_tiers / delta 扫描完成；calc_trades 只负责按 --delta 重新
+    核对买入价，并把卖出计划换算成现金盈亏。
     """
     return pd.DataFrame(
         {
@@ -1402,19 +1533,26 @@ def build_cash_input(included: pd.DataFrame) -> pd.DataFrame:
             "股票名称": included["name"].fillna("").astype(str),
             "命中日收盘价(不复权)": included["t_close_raw"],
             "次日日期": included["t1_date"].astype(str),
-            "次次日日期": included["t2_date"].astype(str),
             "次日开盘价(不复权)": included["t1_open_raw"],
             "次日最低价(不复权)": included["t1_low_raw"],
             "次日收盘价(不复权)": included["t1_close_raw"],
             "T+1收盘对买入价涨幅": included["t1_intraday_ret"],
             "动态止盈阈值": included["exit_threshold"],
             "止盈区间": included["exit_tier"].astype(str),
+            "计划卖出日": included["final_sell_date"].astype(str),
+            "实际卖出日": included["exit_date"],
+            "卖出偏移": included["exit_offset"],
+            "卖出方式": included["exit_type"].fillna("").astype(str),
+            "卖出价(不复权)": included["exit_price_raw"],
+            "卖出日是否跌停": included["sell_limit_down"].astype(bool),
+            "卖出状态": included["exit_status"].fillna("").astype(str),
+            "卖出备注": included["exit_error"].fillna("").astype(str),
+            # 兼容旧调用方（cash_grid_search / capital_cycle）：保留 T+2 原始列。
+            "次次日日期": included["t2_date"].astype(str),
             "次次日开盘价(不复权)": included["t2_open_raw"],
             "次次日最高价(不复权)": included["t2_high_raw"],
             "次次日收盘价(不复权)": included["t2_close_raw"],
             "次次日跌停价(不复权)": included["t2_down_limit"],
-            "卖出方式": included["exit_type"],
-            "卖出日是否跌停": included["sell_limit_down"].astype(bool),
         }
     )
 
@@ -1476,175 +1614,6 @@ def resolve_buy(row: pd.Series, args: argparse.Namespace) -> dict:
     return {"ok": True, "status": "已买入", "base": base, "error": ""}
 
 
-def resolve_sell(
-    row: pd.Series,
-    calendar: list[str],
-    args: argparse.Namespace,
-    exit_tiers: tuple,
-    price_cache: dict,
-    entry_base: float | None = None,
-) -> dict:
-    """逐笔参考实现：判定卖出分支与实际卖出价。
-
-    批量计算请用 calc_trades（向量化，口径与此一致）；本函数保留用于
-    单样本核对/调试。
-
-    entry_base 为买入基准价（resolve_buy 的 base，不含滑点）：止盈目标价与
-    分档涨幅均以它为基准（delta=0 时即 T+1 开盘价，与原口径一致）。
-    直接调用未传 entry_base 时退回开盘价口径。
-    """
-    code = str(row["股票代码"])
-    buy_date = str(row["次日日期"])
-    plan_sell_date = str(row["次次日日期"])
-    close_limit_hint = to_bool(row.get("卖出日是否跌停", False))
-
-    t1_open = pd.to_numeric(row["次日开盘价(不复权)"], errors="coerce")
-    t1_close = pd.to_numeric(row.get(OPTIONAL_T1_CLOSE_COLUMN), errors="coerce")
-    t2_open = pd.to_numeric(row["次次日开盘价(不复权)"], errors="coerce")
-    t2_high = pd.to_numeric(row["次次日最高价(不复权)"], errors="coerce")
-    t2_close = pd.to_numeric(row["次次日收盘价(不复权)"], errors="coerce")
-    t2_down = pd.to_numeric(row["次次日跌停价(不复权)"], errors="coerce")
-
-    def result(**kwargs) -> dict:
-        base = {
-            "exit_status": "已卖出",
-            "sell_date": None,
-            "sell_price_raw": np.nan,
-            "delay_days": 0,
-            "exit_mode": "",
-            "t1_intraday_ret": np.nan,
-            "exit_threshold": np.nan,
-            "exit_tier": None,
-            "error": "",
-        }
-        base.update(kwargs)
-        return base
-
-    if entry_base is None or not np.isfinite(entry_base) or entry_base <= 0:
-        if pd.isna(t1_open) or t1_open <= 0:
-            return result(exit_status="无T+1开盘价", error="缺少T+1开盘价")
-        entry_base = float(t1_open)
-
-    # 单段分档（--open-exit 固定阈值）不需要 T+1 收盘价；多段分档必须先定位档位
-    if len(exit_tiers) == 1:
-        threshold = float(exit_tiers[0][2])
-        tier_label = tier_labels(exit_tiers)[0]
-        day1_ret = float("nan")
-    else:
-        if pd.isna(t1_close) or t1_close <= 0:
-            px = load_price_row(code, buy_date, price_cache)
-            if px is not None:
-                close = px.get("close")
-                if close is not None and pd.notna(close) and float(close) > 0:
-                    t1_close = float(close)
-        if pd.isna(t1_close) or t1_close <= 0:
-            return result(
-                exit_status="无T+1收盘价",
-                error="缺少T+1收盘价，无法确定止盈档位",
-            )
-        # 分档涨幅：T+1 收盘对买入基准价；delta=0 时即原日内涨幅 close/open-1
-        day1_ret = float(t1_close) / entry_base - 1.0
-        idx = tier_index(day1_ret, exit_tiers)
-        if idx is None:
-            return result(
-                exit_status="无法分档",
-                error="T+1收盘对买入价涨幅无效，无法落入任何止盈档位",
-            )
-        threshold = float(exit_tiers[idx][2])
-        tier_label = tier_labels(exit_tiers)[idx]
-
-    common = {
-        "t1_intraday_ret": day1_ret,
-        "exit_threshold": threshold,
-        "exit_tier": tier_label,
-    }
-    # 止盈/止损目标价以买入基准价为基准（delta=0 时即原 open(T+1) 口径）
-    target = entry_base * (1.0 + threshold)
-
-    # 1) T+2 开盘已高于目标价：直接以开盘价成交
-    if pd.notna(t2_open) and t2_open > 0 and float(t2_open) > target:
-        return result(
-            sell_date=plan_sell_date,
-            sell_price_raw=float(t2_open),
-            exit_mode="T+2 开盘",
-            **common,
-        )
-
-    # 2) 缺少最高价就无法判断盘中是否触及目标价
-    if pd.isna(t2_high) or t2_high <= 0:
-        return result(
-            exit_status="无T+2最高价",
-            error="缺少T+2最高价，无法判断盘中止盈",
-            **common,
-        )
-
-    # 3) 盘中触及目标价：按目标价卖出（受最高价约束）
-    if float(t2_high) >= target:
-        return result(
-            sell_date=plan_sell_date,
-            sell_price_raw=min(target, float(t2_high)),
-            exit_mode="T+2 盘中",
-            **common,
-        )
-
-    # 4) T+2 收盘卖出。若收盘跌停，尾盘卖不出去，顺延到下一交易日开盘。
-    if pd.isna(t2_close) or t2_close <= 0:
-        return result(exit_status="无T+2收盘价", error="缺少T+2收盘价", **common)
-    if not close_limit_hint and not is_limit_down(float(t2_close), float(t2_down)):
-        return result(
-            sell_date=plan_sell_date,
-            sell_price_raw=float(t2_close),
-            exit_mode="T+2 收盘",
-            **common,
-        )
-
-    dates = next_trade_dates(calendar, plan_sell_date, args.max_delay_days)
-    if not dates:
-        return result(
-            exit_status="无法顺延",
-            error="交易日历无后续交易日",
-            **common,
-        )
-
-    last_row = None
-    for i, date in enumerate(dates, start=1):
-        px = load_price_row(code, date, price_cache)
-        if px is None:
-            continue
-        last_row = px
-        open_price = px.get("open")
-        down_limit = px.get("down_limit")
-        if (
-            pd.notna(open_price)
-            and open_price > 0
-            and not is_limit_down(float(open_price), float(down_limit))
-        ):
-            return result(
-                sell_date=date,
-                sell_price_raw=float(open_price),
-                delay_days=i,
-                exit_mode=f"顺延{i}日开盘",
-                **common,
-            )
-
-    # 超过最长顺延仍无法卖出：按最后一个可用收盘价做市值估值。
-    if last_row is not None and pd.notna(last_row.get("close")):
-        return result(
-            exit_status="超期未卖出(按最后收盘估值)",
-            sell_date=str(last_row["trade_date"]),
-            sell_price_raw=float(last_row["close"]),
-            delay_days=len(dates),
-            exit_mode=f"顺延{len(dates)}日后估值",
-            error="连续跌停无法卖出，按最后收盘估值",
-            **common,
-        )
-    return result(
-        exit_status="无后续行情",
-        error="顺延期间无行情",
-        **common,
-    )
-
-
 def _float_column(df: pd.DataFrame, column: str) -> np.ndarray:
     """取数值列（缺失列返回全 NaN），避免逐行 pd.to_numeric 的开销。"""
     if column not in df.columns:
@@ -1660,7 +1629,7 @@ def _bool_column(df: pd.DataFrame, column: str) -> np.ndarray:
     return df[column].map(to_bool).to_numpy(dtype=bool)
 
 
-def calc_trades(
+def _calc_trades_t2_legacy(
     samples: pd.DataFrame,
     args: argparse.Namespace,
     exit_tiers: tuple,
@@ -1952,6 +1921,249 @@ def calc_trades(
     )
 
 
+def calc_trades(
+    samples: pd.DataFrame,
+    args: argparse.Namespace,
+    exit_tiers: tuple | None = None,
+    calendar: list[str] | None = None,
+    price_cache: dict | None = None,
+) -> pd.DataFrame:
+    """逐样本计算现金盈亏。
+
+    买入：按 args.delta 在 T+1 开盘价/限价买入（与 build_samples 口径一致）。
+    卖出：直接使用 build_samples 扫描好的 T+2..T+N 卖出计划；只有
+    “T+N 收盘卖出且收盘跌停”的样本才走顺延循环。
+    calendar / price_cache 可由调用方注入；缺省自行加载交易日历并使用空缓存。
+
+    exit_tiers 非 None 时走旧 T+2 兼容路径，供 cash_grid_search /
+    capital_cycle 等旧调用方使用；主脚本不传该参数，走 T+2..T+N 扫描结果。
+    """
+    if exit_tiers is not None:
+        out = _calc_trades_t2_legacy(
+            samples, args, exit_tiers, calendar=calendar, price_cache=price_cache
+        )
+        out["exit_offset"] = 2
+        return out[TRADE_COLUMNS]
+
+    if calendar is None:
+        calendar = load_calendar()
+    if price_cache is None:
+        price_cache = {}
+    if samples.empty:
+        return pd.DataFrame(columns=TRADE_COLUMNS)
+
+    n = len(samples)
+    hit_date = samples["命中日期"].astype(str).to_numpy()
+    code = samples["股票代码"].astype(str).to_numpy()
+    name = samples["股票名称"].astype(str).to_numpy()
+    buy_date = samples["次日日期"].astype(str).to_numpy()
+    plan_sell_date = samples["计划卖出日"].astype(str).to_numpy()
+    exit_date_raw = samples["实际卖出日"].to_numpy(dtype=object)
+    exit_date = np.array(
+        [None if pd.isna(value) else str(value) for value in exit_date_raw],
+        dtype=object,
+    )
+    exit_mode_plan = samples["卖出方式"].fillna("").astype(str).to_numpy()
+    exit_price_plan = _float_column(samples, "卖出价(不复权)")
+    exit_offset = _float_column(samples, "卖出偏移")
+    exit_status_plan = samples["卖出状态"].fillna("").astype(str).to_numpy()
+    exit_error_plan = samples["卖出备注"].fillna("").astype(str).to_numpy()
+    close_limit_hint = _bool_column(samples, "卖出日是否跌停")
+
+    t1_open = _float_column(samples, "次日开盘价(不复权)")
+    t1_low = _float_column(samples, "次日最低价(不复权)")
+    t1_close = _float_column(samples, "次日收盘价(不复权)")
+    t_close = _float_column(samples, "命中日收盘价(不复权)")
+
+    # ---------------- 买入 ----------------
+    delta_frac = float(args.delta) / 100.0
+    buy_base = np.full(n, np.nan, dtype="float64")
+    m_open = np.isfinite(t1_open) & (t1_open > 0)
+    buy_ok = m_open.copy()
+    buy_status = np.full(n, "无T+1开盘价", dtype=object)
+    buy_error = np.full(n, "缺少T+1开盘价", dtype=object)
+
+    if delta_frac <= 0:
+        buy_base[buy_ok] = t1_open[buy_ok]
+    else:
+        has_t_close = np.isfinite(t_close) & (t_close > 0)
+        candidate = t1_open - delta_frac * t_close
+        m_noclose = m_open & ~has_t_close
+        m_invalid = m_open & has_t_close & ~(candidate > 0)
+        m_hasbase = m_open & has_t_close & (candidate > 0)
+        m_nolow = m_hasbase & ~np.isfinite(t1_low)
+        m_unfilled = m_hasbase & np.isfinite(t1_low) & (t1_low > candidate + LIMIT_EPS)
+        buy_ok = m_hasbase & np.isfinite(t1_low) & ~m_unfilled
+        buy_base[buy_ok] = candidate[buy_ok]
+        buy_status[m_noclose] = "无T日收盘价"
+        buy_error[m_noclose] = "缺少T日收盘价，无法计算限价买入价"
+        buy_status[m_invalid] = "买入价无效"
+        for i in np.flatnonzero(m_invalid):
+            buy_error[i] = f"限价买入价无效（{candidate[i]:.3f} <= 0）"
+        buy_status[m_nolow] = "无T+1最低价"
+        buy_error[m_nolow] = "缺少T+1最低价，无法判定限价成交"
+        buy_status[m_unfilled] = "限价未成交"
+        buy_error[m_unfilled] = "T+1日内未触及限价买入价"
+
+    buy_price = np.where(buy_ok, buy_base * (1.0 + args.slippage), np.nan)
+
+    # ---------------- 卖出（使用 build_samples 的扫描结果） ----------------
+    sell_status = buy_status.copy()
+    sell_error = buy_error.copy()
+
+    plan_ok = (
+        np.isfinite(exit_price_plan)
+        & (exit_price_plan > 0)
+        & np.array([date is not None for date in exit_date], dtype=bool)
+    )
+    valid_plan = buy_ok & plan_ok
+    sell_status[valid_plan] = "已卖出"
+    sell_error[valid_plan] = ""
+
+    # build_samples 已经给出明确的失败原因（无法分档/无行情）
+    plan_failed = buy_ok & ~plan_ok
+    sell_status[plan_failed] = exit_status_plan[plan_failed]
+    sell_error[plan_failed] = exit_error_plan[plan_failed]
+
+    sell_date = np.where(
+        valid_plan,
+        exit_date,
+        None,
+    ).astype(object)
+    sell_price = np.where(valid_plan, exit_price_plan, np.nan)
+    exit_mode = np.where(valid_plan, exit_mode_plan, "")
+    delay_days = np.zeros(n, dtype="int64")
+
+    # 只有 T+N 收盘卖出且收盘跌停才顺延
+    final_mode = exit_mode_plan == f"T+{args.sell_n} 收盘"
+    m_delay = valid_plan & final_mode & close_limit_hint
+    if m_delay.any():
+        date_pos = {d: i for i, d in enumerate(calendar)}
+        max_delay = int(args.max_delay_days)
+        for i in np.flatnonzero(m_delay):
+            pos = date_pos.get(plan_sell_date[i])
+            dates = calendar[pos + 1 : pos + 1 + max_delay] if pos is not None else []
+            if not dates:
+                sell_status[i] = "无法顺延"
+                sell_error[i] = "交易日历无后续交易日"
+                sell_date[i] = None
+                sell_price[i] = np.nan
+                continue
+            last_row = None
+            for days, date in enumerate(dates, start=1):
+                px = load_price_row(code[i], date, price_cache)
+                if px is None:
+                    continue
+                last_row = px
+                open_price = px.get("open")
+                down_limit = px.get("down_limit")
+                if (
+                    pd.notna(open_price)
+                    and open_price > 0
+                    and not is_limit_down(
+                        float(open_price),
+                        np.nan if down_limit is None else float(down_limit),
+                    )
+                ):
+                    sell_date[i] = date
+                    sell_price[i] = float(open_price)
+                    delay_days[i] = days
+                    exit_mode[i] = f"顺延{days}日开盘"
+                    sell_status[i] = "已卖出"
+                    sell_error[i] = ""
+                    break
+            else:
+                if last_row is not None and pd.notna(last_row.get("close")):
+                    sell_status[i] = "超期未卖出(按最后收盘估值)"
+                    sell_date[i] = str(last_row["trade_date"])
+                    sell_price[i] = float(last_row["close"])
+                    delay_days[i] = len(dates)
+                    exit_mode[i] = f"顺延{len(dates)}日后估值"
+                    sell_error[i] = "连续跌停无法卖出，按最后收盘估值"
+                else:
+                    sell_status[i] = "无后续行情"
+                    sell_error[i] = "顺延期间无行情"
+                    sell_date[i] = None
+                    sell_price[i] = np.nan
+
+    # ---------------- 现金 ----------------
+    sell_price_net = np.where(
+        np.isfinite(sell_price) & (sell_price > 0),
+        sell_price * (1.0 - args.slippage),
+        np.nan,
+    )
+    valid_buy_price = buy_ok & np.isfinite(buy_price) & (buy_price > 0)
+    lot_ratio = np.full(n, np.nan, dtype="float64")
+    lot_ratio[valid_buy_price] = args.position / (buy_price[valid_buy_price] * 100.0)
+    lots_raw = (
+        np.round(lot_ratio) if args.lot_mode == "nearest" else np.floor(lot_ratio)
+    )
+    lots = np.where(np.isfinite(lots_raw) & (lots_raw > 0), lots_raw, 0).astype("int64")
+    shares = lots * 100
+    has_position = lots > 0
+    sell_ok = np.isfinite(sell_price_net) & (sell_price_net > 0)
+    buy_amount = np.where(has_position, shares * buy_price, 0.0)
+    buy_fee = np.where(
+        has_position,
+        np.maximum(buy_amount * args.commission, args.min_commission)
+        + buy_amount * args.transfer,
+        0.0,
+    )
+    filled_sell = has_position & sell_ok
+    sell_amount = np.where(filled_sell, shares * sell_price_net, 0.0)
+    sell_fee = np.where(
+        filled_sell,
+        np.maximum(sell_amount * args.commission, args.min_commission)
+        + sell_amount * args.stamp
+        + sell_amount * args.transfer,
+        0.0,
+    )
+    net_pnl = np.where(
+        filled_sell, sell_amount - sell_fee - buy_amount - buy_fee, np.nan
+    )
+    net_return = np.where(filled_sell, net_pnl / (buy_amount + buy_fee), np.nan)
+    gross_return = np.where(filled_sell, sell_price_net / buy_price - 1.0, np.nan)
+    error = np.where(valid_buy_price & ~has_position, "资金不足1手", sell_error)
+
+    t1_intraday_ret = _float_column(samples, "T+1收盘对买入价涨幅")
+    exit_threshold = _float_column(samples, "动态止盈阈值")
+    exit_tier = samples["止盈区间"].astype(str).to_numpy()
+
+    return pd.DataFrame(
+        {
+            "hit_date": hit_date,
+            "ts_code": code,
+            "name": name,
+            "buy_date": buy_date,
+            "plan_sell_date": plan_sell_date,
+            "sell_date": sell_date,
+            "exit_offset": exit_offset,
+            "t1_intraday_ret": t1_intraday_ret,
+            "exit_threshold": exit_threshold,
+            "exit_tier": exit_tier,
+            "exit_mode": exit_mode,
+            "delay_days": delay_days,
+            "lot_mode": args.lot_mode,
+            "lots": lots,
+            "shares": shares,
+            "buy_base_raw": buy_base,
+            "buy_price_raw": buy_price,
+            "sell_price_raw": sell_price_net,
+            "buy_amount": buy_amount,
+            "buy_fee": buy_fee,
+            "sell_amount": sell_amount,
+            "sell_fee": sell_fee,
+            "net_pnl": net_pnl,
+            "gross_return": gross_return,
+            "net_return": net_return,
+            "exit_status": sell_status,
+            "is_delayed": delay_days > 0,
+            "close_limit_down": close_limit_hint,
+            "error": error,
+        }
+    )
+
+
 def stats(values: pd.Series) -> dict:
     v = pd.to_numeric(values, errors="coerce").dropna()
     if v.empty:
@@ -2049,6 +2261,10 @@ def build_cash_trades_export(
     for column in CASH_TRADES_PCT_COLUMNS:
         if column in out.columns:
             out[column] = out[column].map(lambda value: fmt_pct(value, signed=False))
+    if "exit_offset" in out.columns:
+        out["exit_offset"] = out["exit_offset"].map(
+            lambda value: "" if pd.isna(value) else int(value)
+        )
     ordered = [c for c in CASH_TRADES_COLUMN_ORDER if c in out.columns]
     ordered += [c for c in out.columns if c not in ordered]
     return out[ordered].rename(columns=CASH_TRADES_CN)
@@ -2078,6 +2294,7 @@ def build_cash_report(
     start: str,
     end: str,
     title: str = "# limit_up_shakeout 二次筛选样本现金收益",
+    hit_table: str = "hit_limit_up_shakeout",
 ) -> str:
     realized = trades[trades["exit_status"] == "已卖出"].copy()
     delayed = trades[trades["delay_days"] > 0].copy()
@@ -2151,6 +2368,9 @@ def build_cash_report(
                     "名称": row.name,
                     "买入日": row.buy_date,
                     "实际卖出日": row.sell_date,
+                    "卖出偏移": (
+                        int(row.exit_offset) if pd.notna(row.exit_offset) else "-"
+                    ),
                     "手数": int(row.lots),
                     "买入价": f"{row.buy_price_raw:.3f}",
                     "卖出价": f"{row.sell_price_raw:.3f}",
@@ -2163,6 +2383,7 @@ def build_cash_report(
 
     summary_rows = [
         {"指标": "样本数", "数值": str(len(trades))},
+        {"指标": "最长持有交易日 N", "数值": str(args.sell_n)},
         {"指标": "实际买入样本数", "数值": str(int((trades["shares"] > 0).sum()))},
         {
             "指标": "买入失败样本数（限价未成交/缺价格）",
@@ -2201,13 +2422,15 @@ def build_cash_report(
         title,
         "",
         f"- 生成时间：{generated_at}",
-        "- 命中表：`hit_limit_up_shakeout`",
+        f"- 命中表：`{hit_table}`",
         f"- 统计区间：`{start}` ~ `{end}`",
         f"- T 日高开区间：`{fmt_range(args.gap)}`",
         f"- T 日收盘涨跌幅区间：`{fmt_range(args.close_chg)}`",
         f"- 涨幅条件：{fmt_n_days_rise(args.n_days_rise)}",
         f"- T+1 买入低开区间（原始价，相对 T 日收盘）：`{fmt_entry_gap_ranges(args.entry_gap)}`",
         f"- 买入 delta：`{args.delta:g}%`（0 = 开盘价买入）",
+        f"- 持有窗口：`T+2 ~ T+{args.sell_n}`（T+1 买入；盘中触及目标价即卖出，"
+        f"一直未触发则 T+{args.sell_n} 收盘卖出）",
         f"- 信号日最低价条件：{'要求' if args.require_low_support else '不要求'}"
         "（后复权 `low(T) >= close(T-1)`）",
         f"- 样本数：{len(trades)}",
@@ -2224,12 +2447,14 @@ def build_cash_report(
         f"- 动态止盈分档：{format_tiers_summary(exit_tiers)}",
         "- 止盈/止损基准：目标价 = 买入基准价 × (1 + 阈值)；分档涨幅 = "
         "`close(T+1)/买入基准价 - 1`（delta=0 时即原日内涨幅 `close/open`）。",
-        "- 卖出执行：T+2 开盘价高于目标价按开盘价卖出；盘中最高价触及目标价按目标价卖出；"
-        "否则 T+2 收盘卖出（收盘跌停顺延）。",
+        "- 卖出执行：T+2 起逐日检查；开盘价高于目标价按开盘价卖出，"
+        "盘中最高价触及目标价按目标价卖出；"
+        f"一直未触发则 T+{args.sell_n} 收盘卖出（收盘跌停顺延）。",
         f"- 佣金：`{args.commission:.5%}`，最低 `{args.min_commission:.0f}` 元；"
         f"印花税：`{args.stamp:.3%}`（卖出）；过户费：`{args.transfer:.4%}`（双边）；"
         f"滑点：`{args.slippage:.2%}`（单边）",
-        f"- 尾盘跌停：`T+2 收盘卖出` 且收盘跌停时，顺延到下一交易日开盘，最多 `{args.max_delay_days}` 个交易日。",
+        f"- 尾盘跌停：`T+{args.sell_n} 收盘卖出` 且收盘跌停时，顺延到下一交易日开盘，"
+        f"最多 `{args.max_delay_days}` 个交易日。",
         "",
         "## 汇总",
         "",
@@ -2319,6 +2544,7 @@ def build_cash_report(
                     "名称",
                     "买入日",
                     "实际卖出日",
+                    "卖出偏移",
                     "手数",
                     "买入价",
                     "卖出价",
@@ -2338,6 +2564,7 @@ def build_cash_report(
                     "名称",
                     "买入日",
                     "实际卖出日",
+                    "卖出偏移",
                     "手数",
                     "买入价",
                     "卖出价",
@@ -2355,9 +2582,9 @@ def build_cash_report(
             "实际买入价 = 基准价×(1+滑点)；卖出价用实际卖出日不复权价格。",
             "- 止盈目标价 = 买入基准价 × (1 + 动态止盈阈值)；阈值按 T+1 收盘对买入价涨幅 "
             "close(T+1)/买入基准价-1 分档确定（delta=0 时即原日内涨幅口径），负阈值为止损档。",
-            "- 卖出分支按不复权价格与当前分档参数逐样本重新判定；遇除权日"
-            "与样本筛选阶段的理论卖出方式可能有细微差异。",
-            "- 盘中触及目标价时假设能按目标价精确成交，受 T+2 最高价约束；未考虑滑点前的盘中路径。",
+            "- 卖出日按 T+2..T+N 顺序扫描：开盘价高于目标价按开盘价成交；否则盘中最高价"
+            "触及目标价按目标价成交；一直未触发则 T+N 收盘卖出。",
+            "- 盘中触及目标价时假设能按目标价精确成交，受当日最高价约束；未考虑滑点前的盘中路径。",
             "- T+1 收盘价缺失（且数据库也查不到）时无法分档，该样本按错误处理、不交易；"
             "T 日收盘价/T+1 最低价缺失时无法判定限价买入，同样不交易。",
             "- 佣金、印花税、过户费按成交金额计算；佣金有最低 5 元限制。",
@@ -2378,8 +2605,17 @@ def build_cash_report(
     return "\n".join(lines)
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = parse_args(argv)
+def main(
+    argv: list[str] | None = None,
+    *,
+    strategy: str = "limit_up_shakeout",
+    hit_table: str = "hit_limit_up_shakeout",
+    display_name: str = "limit_up_shakeout 二次筛选样本",
+    output_prefix: str = "limitup_shakeout_returns",
+    description: str | None = None,
+) -> int:
+    """脚本入口；默认统计 limit_up_shakeout 命中样本的现金盈亏。"""
+    args = parse_args(argv, description=description)
     # 止盈分档先解析校验，错误早暴露
     exit_tiers, tiers_source = resolve_exit_tiers(args)
     if args.position <= 0:
@@ -2388,6 +2624,8 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--max-delay-days 必须 >= 0")
     if args.delta < 0:
         raise SystemExit("--delta 必须 >= 0（百分点；0 = 开盘价买入）")
+    if args.sell_n < 2:
+        raise SystemExit("--sell-n 必须 >= 2（T+1 买入，最早 T+2 卖出）")
     for name, rng in (
         ("--gap", args.gap),
         ("--close-chg", args.close_chg),
@@ -2398,14 +2636,14 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--entry-gap 至少需要一个闭区间")
 
     start = compact_date(args.start)
-    end = resolve_end_date(args.end)
+    end = resolve_end_date(args.end, hit_table)
     if start > end:
         raise SystemExit(f"起始日期 {start} 晚于结束日期 {end}")
 
     print("=" * 90)
-    print("limit_up_shakeout 二次筛选样本现金收益")
+    print(f"{display_name}现金收益")
     print(f"  统计区间：{start} ~ {end}")
-    print(f"  命中策略：limit_up_shakeout")
+    print(f"  命中策略：{strategy}")
     print(f"  T日高开：{fmt_range(args.gap)}（闭区间）")
     print(f"  T日收盘涨跌幅：{fmt_range(args.close_chg)}（闭区间）")
     print(f"  涨幅条件：{fmt_n_days_rise(args.n_days_rise)}")
@@ -2430,6 +2668,10 @@ def main(argv: list[str] | None = None) -> int:
     print(f"    {format_tiers_summary(exit_tiers)}")
     print(f"    分档来源：{tiers_source}")
     print(
+        f"  卖出规则：T+2..T+{args.sell_n} 逐日检查，开盘高于目标价按开盘价卖出，"
+        f"盘中最高价触及目标价按目标价卖出；一直未触发则 T+{args.sell_n} 收盘卖出"
+    )
+    print(
         f"  现金口径：每笔预算 {args.position:,.0f} 元；手数模式 {args.lot_mode}；"
         f"滑点 {args.slippage:.2%}；尾盘跌停最多顺延 {args.max_delay_days} 日"
     )
@@ -2437,13 +2679,13 @@ def main(argv: list[str] | None = None) -> int:
     print("-" * 90)
 
     print(f"读取命中样本 {start} ~ {end} ...")
-    hits = load_hits(start, end)
+    hits = load_hits(start, end, hit_table)
     if hits.empty:
-        raise SystemExit("指定区间没有 limit_up_shakeout 命中样本")
+        raise SystemExit(f"指定区间没有 {strategy} 命中样本")
     print(f"命中样本：{len(hits):,} 条")
 
     calendar = load_calendar()
-    hits = attach_dates(hits, calendar, args.n_days_rise)
+    hits = attach_dates(hits, calendar, args.n_days_rise, args.sell_n)
 
     print("读取行情（按样本角色日期精确取数）...")
     prices = load_prices_by_keys(price_keys_for_hits(hits))
@@ -2460,12 +2702,13 @@ def main(argv: list[str] | None = None) -> int:
         args.entry_gap,
         delta_pct=args.delta,
         require_low_support=args.require_low_support,
+        sell_n=args.sell_n,
     )
     included = samples[samples["included"]].copy()
     if included.empty:
         raise SystemExit("筛选后没有可计算收益的样本")
 
-    # 预先取回“T+2 收盘跌停”样本的顺延窗口，避免 calc_trades 逐笔查库
+    # 预先取回“T+N 收盘跌停”样本的顺延窗口，避免 calc_trades 逐笔查库
     delay_keys = delay_price_keys(samples, calendar, args.max_delay_days)
     delay_keys -= set(zip(prices["ts_code"], prices["trade_date"]))
     if delay_keys:
@@ -2492,9 +2735,7 @@ def main(argv: list[str] | None = None) -> int:
     cash_input = build_cash_input(included)
     export_context = build_export_context(included)
     price_cache = build_price_cache(prices)
-    trades = calc_trades(
-        cash_input, args, exit_tiers, calendar=calendar, price_cache=price_cache
-    )
+    trades = calc_trades(cash_input, args, calendar=calendar, price_cache=price_cache)
     realized = trades[trades["exit_status"] == "已卖出"].copy()
     stats_pnl = stats(realized["net_pnl"])
     stats_ret = stats(realized["net_return"])
@@ -2509,7 +2750,7 @@ def main(argv: list[str] | None = None) -> int:
     run_dir: Path | None = None
     if args.generate_report:
         run_dir = Path(args.output_dir) / (
-            f"limitup_shakeout_returns_{datetime.now():%Y%m%d_%H%M%S}"
+            f"{output_prefix}_{datetime.now():%Y%m%d_%H%M%S}"
         )
         run_dir.mkdir(parents=True, exist_ok=True)
 
@@ -2539,8 +2780,8 @@ def main(argv: list[str] | None = None) -> int:
 
         meta = {
             "generated_at": generated_at,
-            "strategy": "limit_up_shakeout",
-            "hit_table": "hit_limit_up_shakeout",
+            "strategy": strategy,
+            "hit_table": hit_table,
             "start": start,
             "end": end,
             "gap_range": list(args.gap),
@@ -2563,6 +2804,7 @@ def main(argv: list[str] | None = None) -> int:
             "position": args.position,
             "lot_mode": args.lot_mode,
             "max_delay_days": args.max_delay_days,
+            "sell_n": args.sell_n,
             "commission": args.commission,
             "min_commission": args.min_commission,
             "stamp": args.stamp,
@@ -2584,7 +2826,16 @@ def main(argv: list[str] | None = None) -> int:
             encoding="utf-8",
         )
 
-        report = build_cash_report(trades, args, exit_tiers, generated_at, start, end)
+        report = build_cash_report(
+            trades,
+            args,
+            exit_tiers,
+            generated_at,
+            start,
+            end,
+            title=f"# {display_name}现金收益",
+            hit_table=hit_table,
+        )
         (run_dir / "report.md").write_text(report, encoding="utf-8")
 
     print("")
@@ -2608,7 +2859,7 @@ def main(argv: list[str] | None = None) -> int:
     if run_dir is not None:
         print(f"报告目录：{run_dir.resolve()}")
     else:
-        print("报告目录：未生成（默认关闭；加 --report 可生成）")
+        print("报告目录：未生成（加 --report 可生成）")
     return 0
 
 
