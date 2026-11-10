@@ -28,6 +28,8 @@ PAIR_STRATEGIES = ("uptrend_limit_down", "limit_up_shakeout")
 RECOMMEND_MESSAGE_KEY = "今日最终推荐"
 RETRY_ATTEMPTS = 3
 RETRY_DELAY_SECONDS = 1.0
+BUILD_ATTEMPTS = 3
+BUILD_RETRY_DELAY_SECONDS = 10.0
 
 
 logger = logging.getLogger(__name__)
@@ -455,20 +457,36 @@ def build_default_messages(date: str | None = None) -> dict[str, FeishuMessage]:
     }
 
 
+def _build_messages_with_retry(strategy: str | None, date: str | None,
+                               include_co: bool) -> dict[str, FeishuMessage]:
+    """组装卡片；读库/网络瞬断时重试，避免一次异常导致整次推送放弃。"""
+    for attempt in range(1, BUILD_ATTEMPTS + 1):
+        try:
+            if strategy in (None, ""):
+                return build_default_messages(date)
+            return build_messages(strategy, date, include_co)
+        except Exception as exc:  # noqa: BLE001 - 数据库/网络瞬断可重试
+            if attempt == BUILD_ATTEMPTS:
+                raise
+            logger.warning("卡片组装失败（第 %d/%d 次）：%s，%.0f 秒后重试",
+                           attempt, BUILD_ATTEMPTS, exc,
+                           BUILD_RETRY_DELAY_SECONDS)
+            time.sleep(BUILD_RETRY_DELAY_SECONDS)
+    raise RuntimeError("unreachable")  # pragma: no cover
+
+
 def notify_hits(strategy: str | None = None, date: str | None = None,
                 include_co: bool = True) -> dict[str, str]:
     """逐条推送飞书卡片；单条失败不中断，返回 {名称: 状态描述}。
 
     strategy 为空时推默认三卡（今日最终推荐 + 趋势跌停/涨停洗盘 + 多策略共振）；
     指定策略（或 all）时推各策略卡 + 共振卡（旧行为）。
+    组装卡片时若读库/网络异常，会自动重试 BUILD_ATTEMPTS 次。
     """
     settings = get_settings()
     if not settings.feishu_webhook_url:
         raise ValueError("未配置 FEISHU_WEBHOOK_URL（.env），无法推送飞书")
-    if strategy in (None, ""):
-        messages = build_default_messages(date)
-    else:
-        messages = build_messages(strategy, date, include_co)
+    messages = _build_messages_with_retry(strategy, date, include_co)
     results: dict[str, str] = {}
     for name, message in messages.items():
         try:

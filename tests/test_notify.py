@@ -667,6 +667,56 @@ def test_notify_hits_passes_include_co(monkeypatch):
     assert captured == {"include_co": False}
 
 
+def test_notify_hits_retries_build_failures(monkeypatch):
+    monkeypatch.setattr(notify, "get_settings",
+                        lambda: SimpleNamespace(
+                            feishu_webhook_url="https://hook",
+                            feishu_webhook_secret=None))
+    message = notify.FeishuMessage("【今日最终推荐】2026-09-18",
+                                   ("今日不出手",), False)
+    calls = {"count": 0}
+
+    def flaky_build(date):
+        calls["count"] += 1
+        if calls["count"] < notify.BUILD_ATTEMPTS:
+            raise TimeoutError("db timeout")
+        return {"今日最终推荐": message}
+
+    monkeypatch.setattr(notify, "build_default_messages", flaky_build)
+    monkeypatch.setattr(notify.time, "sleep", lambda seconds: None)
+    sent = []
+    monkeypatch.setattr(notify, "send_message",
+                        lambda url, m, secret=None: sent.append(m))
+
+    results = notify.notify_hits(date="20260918")
+
+    assert calls["count"] == notify.BUILD_ATTEMPTS
+    assert sent == [message]
+    assert results == {"今日最终推荐": "已发送"}
+
+
+def test_notify_hits_raises_after_build_retries_exhausted(monkeypatch):
+    monkeypatch.setattr(notify, "get_settings",
+                        lambda: SimpleNamespace(
+                            feishu_webhook_url="https://hook",
+                            feishu_webhook_secret=None))
+    calls = {"count": 0}
+
+    def failing_build(strategy, date, include_co=True):
+        calls["count"] += 1
+        raise TimeoutError("db timeout")
+
+    monkeypatch.setattr(notify, "build_messages", failing_build)
+    monkeypatch.setattr(notify.time, "sleep", lambda seconds: None)
+    monkeypatch.setattr(notify, "send_message",
+                        lambda *args, **kwargs: pytest.fail("不应发送"))
+
+    with pytest.raises(TimeoutError, match="db timeout"):
+        notify.notify_hits("ma_volume", "20260918")
+
+    assert calls["count"] == notify.BUILD_ATTEMPTS
+
+
 def test_build_recommend_message_lists_tiered_picks(monkeypatch):
     primary = (
         _pick("000002.SZ", "股B", "重点", 3,
