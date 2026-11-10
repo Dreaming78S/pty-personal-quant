@@ -7,6 +7,11 @@ import pymysql
 
 from quant.config import get_settings
 
+# 网络异常时不让连接/读写无限阻塞（曾因读包阻塞两小时才报错）。
+CONNECT_TIMEOUT_SECONDS = 10
+READ_TIMEOUT_SECONDS = 300
+WRITE_TIMEOUT_SECONDS = 300
+
 
 def get_connection() -> pymysql.connections.Connection:
     s = get_settings()
@@ -18,6 +23,9 @@ def get_connection() -> pymysql.connections.Connection:
         database=s.aliyun_rds_database,
         charset="utf8mb4",
         autocommit=False,
+        connect_timeout=CONNECT_TIMEOUT_SECONDS,
+        read_timeout=READ_TIMEOUT_SECONDS,
+        write_timeout=WRITE_TIMEOUT_SECONDS,
     )
 
 

@@ -1,6 +1,31 @@
+from types import SimpleNamespace
+
 import pandas as pd
 
 from quant.data import db
+
+
+def test_get_connection_sets_timeouts(monkeypatch):
+    captured = {}
+
+    def fake_connect(**kwargs):
+        captured.update(kwargs)
+        return object()
+
+    monkeypatch.setattr(db.pymysql, "connect", fake_connect)
+    monkeypatch.setattr(db, "get_settings",
+                        lambda: SimpleNamespace(aliyun_rds_host="db.example.com",
+                                                aliyun_rds_port=3306,
+                                                aliyun_rds_user="user",
+                                                aliyun_rds_passport="pw",
+                                                aliyun_rds_database="quant"))
+
+    db.get_connection()
+
+    assert captured["connect_timeout"] == db.CONNECT_TIMEOUT_SECONDS
+    assert captured["read_timeout"] == db.READ_TIMEOUT_SECONDS
+    assert captured["write_timeout"] == db.WRITE_TIMEOUT_SECONDS
+    assert captured["host"] == "db.example.com"
 
 
 def test_build_upsert_sql():
