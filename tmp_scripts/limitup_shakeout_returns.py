@@ -86,7 +86,7 @@ from quant.engine.exit_tiers import (  # noqa: E402
 
 # ==============================================================================
 # 统一默认参数
-DEFAULT_START = "20251101"
+DEFAULT_START = "20180101"
 DEFAULT_END = "latest"
 
 DEFAULT_GAP = (0.00, 0.11)
@@ -102,7 +102,7 @@ DEFAULT_N_DAYS_RISE = "unlimited"
 #   ((-0.06, -0.01),)                       → 仅 [-6%, -1%]
 #   ((-0.06, -0.01), (-0.09, -0.08))        → [-6%, -1%] ∪ [-9%, -8%]
 # CLI 也可直接写：--entry-gap -0.06 -0.01 -0.09 -0.08
-DEFAULT_ENTRY_GAP: tuple[tuple[float, float], ...] = ((-0.06, -0.01), (-0.09, -0.08))
+DEFAULT_ENTRY_GAP: tuple[tuple[float, float], ...] = ((-0.06, -0.01),)
 
 # T+1 限价买入下探深度 delta（百分点）：0 = 开盘价买入
 DEFAULT_DELTA = 0
@@ -110,7 +110,7 @@ DEFAULT_REQUIRE_LOW_SUPPORT = True
 
 # 最长持有到 T+N（交易日）：T+1 买入，T+2 起盘中触及止盈目标即卖出，
 # 一直未触发则 T+N 收盘卖出。N=2 等价于原来的 T+2 固定卖出。
-DEFAULT_SELL_N = 2
+DEFAULT_SELL_N = 3
 
 
 DEFAULT_GENERATE_REPORT = False
@@ -176,6 +176,7 @@ CONTEXT_CN = {
     "t_open_vs_prev_close_adj": "T日开盘相对T-1收盘(后复权)",
     "t_close_vs_prev_close_adj": "T日收盘相对T-1收盘(后复权)",
     "t_low_vs_prev_close_adj": "T日最低相对T-1收盘(后复权)",
+    "t_low_pierce_pct": "刺破百分比",
     # T+1 开盘（买入时可知）；与 --entry-gap / DEFAULT_ENTRY_GAP 同口径
     "entry_gap_close_raw": "T+1日高开比例(原始价)",
     # T+1 收盘（买入后可知）
@@ -218,6 +219,7 @@ CASH_TRADES_COLUMN_ORDER = [
     "t_open_vs_prev_close_adj",
     "t_close_vs_prev_close_adj",
     "t_low_vs_prev_close_adj",
+    "t_low_pierce_pct",
     # T+1 开盘/买入（T+1 开盘时可知）
     "entry_gap_close_raw",
     "buy_base_raw",
@@ -257,6 +259,7 @@ CASH_TRADES_PCT_COLUMNS = (
     "t_open_vs_prev_close_adj",
     "t_close_vs_prev_close_adj",
     "t_low_vs_prev_close_adj",
+    "t_low_pierce_pct",
     "entry_gap_close_raw",
     "t1_intraday_ret",
     "t1_intraday_adj",
@@ -667,7 +670,8 @@ def attach_dates(
     out = hits.copy()
     out["cal_pos"] = out["hit_date"].map(date_pos)
 
-    offsets = [(-1, "prev_date"), (1, "t1_date")]
+    # prev2_date 用于 cash_trades.csv「刺破百分比」的归一化分母 close(T-2)。
+    offsets = [(-1, "prev_date"), (-2, "prev2_date"), (1, "t1_date")]
     rise_cfg = normalize_n_days_rise(n_days_rise)
     if rise_cfg is not None:
         offsets.append((-rise_cfg[0], "rise_ref_date"))
@@ -876,7 +880,7 @@ def _finalize_prices(prices: pd.DataFrame) -> pd.DataFrame:
 def price_keys_for_hits(hits: pd.DataFrame) -> set[tuple[str, str]]:
     """命中样本筛选阶段需要的全部 (代码, 日期) 键。"""
     keys: set[tuple[str, str]] = set()
-    for date_col in ("hit_date", "prev_date", "rise_ref_date", "t1_date"):
+    for date_col in ("hit_date", "prev_date", "prev2_date", "rise_ref_date", "t1_date"):
         if date_col not in hits.columns:
             continue
         for code, date in zip(hits["ts_code"], hits[date_col]):
@@ -983,6 +987,12 @@ def build_samples(
             "adj_close": "prev_adj_close",
         },
     )
+    if "prev2_date" in samples.columns:
+        samples = _merge_role(
+            samples, prices, "prev2_date", {"adj_close": "prev2_adj_close"}
+        )
+    else:
+        samples["prev2_adj_close"] = np.nan
     if rise_cfg is not None:
         if "rise_ref_date" not in samples.columns:
             raise ValueError(
@@ -2215,6 +2225,15 @@ def build_export_context(included: pd.DataFrame) -> pd.DataFrame:
         if "industry" in included.columns
         else pd.Series("", index=included.index, dtype="object")
     )
+    # 刺破百分比：未刺破固定为 0；刺破时按前一日“实体涨幅”归一化：
+    # (close(T-1) - low(T)) / (close(T-1) - close(T-2))（后复权）。
+    # 分母为 0 时无定义，输出空值（CSV 中显示为 "-"）。
+    pierced = included["t_adj_low"].lt(included["prev_adj_close"])
+    valid_low = included["t_adj_low"].notna() & included["prev_adj_close"].notna()
+    prev_body = included["prev_adj_close"] - included["prev2_adj_close"]
+    pierce_pct = (included["prev_adj_close"] - included["t_adj_low"]) / prev_body
+    pierce_pct = pierce_pct.where(pierced, 0.0)
+    pierce_pct = pierce_pct.where(valid_low, np.nan).replace([np.inf, -np.inf], np.nan)
     context = pd.DataFrame(
         {
             "hit_date": included["hit_date"].astype(str),
@@ -2238,6 +2257,7 @@ def build_export_context(included: pd.DataFrame) -> pd.DataFrame:
                 "t_close_vs_prev_close_adj"
             ].to_numpy(),
             "t_low_vs_prev_close_adj": included["t_low_vs_prev_close_adj"].to_numpy(),
+            "t_low_pierce_pct": pierce_pct.to_numpy(),
         }
     )
     return context.drop_duplicates(["hit_date", "ts_code"])
