@@ -26,9 +26,9 @@ import pandas as pd
 
 # 每段：(下界, 上界, 止盈率)；区间左开右闭 (下界, 上界]，None 表示 ±∞
 DEFAULT_EXIT_TIERS: tuple[tuple[float | None, float | None, float], ...] = (
-    (None, -0.05, 0.05),
-    (-0.05, 0.00, 0.01),
-    (0.00, 0.05, 0.02),
+    (None, -0.05, 0.04),
+    (-0.05, 0.00, 0.04),
+    (0.00, 0.05, 0.04),
     (0.05, None, 0.04),
 )
 
